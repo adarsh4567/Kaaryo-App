@@ -13,19 +13,38 @@ import {
 } from '@expo-google-fonts/inter';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
+import * as SystemUI from 'expo-system-ui';
 import { AppProvider } from '@/context/AppContext';
+import { useTheme } from '@/hooks/useColors';
 
 SplashScreen.preventAutoHideAsync();
 
 const queryClient = new QueryClient();
 
 function RootLayoutNav() {
+  const { colors } = useTheme();
+
+  // Keeps the window background behind sheets and mid-push on-palette.
+  useEffect(() => {
+    SystemUI.setBackgroundColorAsync(colors.background).catch(() => {
+      // Not supported on every platform — safe to ignore.
+    });
+  }, [colors.background]);
+
   return (
-    <Stack>
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'fade' }} />
-      <Stack.Screen name="book" options={{ headerShown: false }} />
-      <Stack.Screen name="tracking" options={{ headerShown: false }} />
+    <Stack
+      screenOptions={{
+        headerShown: false,
+        contentStyle: { backgroundColor: colors.background },
+      }}
+    >
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="onboarding" options={{ animation: 'fade' }} />
+      <Stack.Screen name="service" />
+      <Stack.Screen name="cart" options={{ animation: 'slide_from_bottom' }} />
+      <Stack.Screen name="address" options={{ presentation: 'modal' }} />
+      <Stack.Screen name="coupons" options={{ presentation: 'modal' }} />
+      <Stack.Screen name="tracking" options={{ gestureEnabled: false }} />
     </Stack>
   );
 }

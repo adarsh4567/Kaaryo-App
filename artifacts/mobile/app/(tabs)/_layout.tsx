@@ -1,40 +1,27 @@
 import React from 'react';
-import { Platform, StyleSheet, useColorScheme, View } from 'react-native';
-import { useColors } from '@/hooks/useColors';
-import { Feather } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
-import { isLiquidGlassAvailable } from 'expo-glass-effect';
+import { StyleSheet, View } from 'react-native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
-import { Icon, Label, NativeTabs } from 'expo-router/unstable-native-tabs';
-import { SymbolView } from 'expo-symbols';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTheme } from '@/hooks/useColors';
+import { useScreenInsets } from '@/hooks/useScreenInsets';
+import { fonts, radii, TAB_BAR_HEIGHT } from '@/constants/theme';
+import { useAppContext } from '@/context/AppContext';
+import type { MdiName } from '@/lib/catalog';
 
-function NativeTabLayout() {
-  return (
-    <NativeTabs>
-      <NativeTabs.Trigger name="index">
-        <Icon sf={{ default: 'house', selected: 'house.fill' }} />
-        <Label>Home</Label>
-      </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="history">
-        <Icon sf={{ default: 'clock', selected: 'clock.fill' }} />
-        <Label>Bookings</Label>
-      </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="profile">
-        <Icon sf={{ default: 'person', selected: 'person.fill' }} />
-        <Label>Profile</Label>
-      </NativeTabs.Trigger>
-    </NativeTabs>
-  );
-}
+/**
+ * Floating pill tab bar.
+ *
+ * Detached from the screen edge so content scrolls visibly beneath it — the
+ * quick-commerce convention, and it leaves room for the cart bar to dock above.
+ */
+export default function TabLayout() {
+  const { colors, shadow } = useTheme();
+  const insets = useScreenInsets();
+  const { history } = useAppContext();
 
-function ClassicTabLayout() {
-  const colors = useColors();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
-  const isIOS = Platform.OS === 'ios';
-  const isWeb = Platform.OS === 'web';
-  const safeArea = useSafeAreaInsets();
+  const liveBookings = history.filter((h) =>
+    ['searching', 'in_progress', 'pending_rating'].includes(h.status)
+  ).length;
 
   return (
     <Tabs
@@ -42,72 +29,108 @@ function ClassicTabLayout() {
         headerShown: false,
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.mutedForeground,
-        tabBarStyle: {
-          position: 'absolute',
-          backgroundColor: isIOS ? 'transparent' : colors.background,
-          borderTopWidth: isWeb ? 1 : 0,
-          borderTopColor: colors.border,
-          elevation: 0,
-          paddingBottom: safeArea.bottom,
-          ...(isWeb ? { height: 84 } : {}),
+        tabBarLabelStyle: styles.label,
+        tabBarItemStyle: styles.item,
+        tabBarBadgeStyle: {
+          backgroundColor: colors.primary,
+          color: colors.primaryForeground,
+          fontFamily: fonts.semibold,
+          fontSize: 10,
         },
-        tabBarBackground: () =>
-          isIOS ? (
-            <BlurView
-              intensity={100}
-              tint={isDark ? 'dark' : 'light'}
-              style={StyleSheet.absoluteFill}
-            />
-          ) : isWeb ? (
-            <View
-              style={[StyleSheet.absoluteFill, { backgroundColor: colors.background }]}
-            />
-          ) : null,
+        sceneStyle: { backgroundColor: colors.background },
+        tabBarStyle: [
+          styles.bar,
+          shadow.lg,
+          {
+            bottom: insets.bottom + 10,
+            backgroundColor: colors.card,
+            borderColor: colors.border,
+          },
+        ],
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
           title: 'Home',
-          tabBarIcon: ({ color }) =>
-            isIOS ? (
-              <SymbolView name="house" tintColor={color} size={22} />
-            ) : (
-              <Feather name="home" size={22} color={color} />
-            ),
+          tabBarIcon: ({ focused, color }) => (
+            <TabIcon
+              icon={focused ? 'home-variant' : 'home-variant-outline'}
+              color={color}
+              focused={focused}
+            />
+          ),
         }}
       />
       <Tabs.Screen
-        name="history"
+        name="bookings"
         options={{
           title: 'Bookings',
-          tabBarIcon: ({ color }) =>
-            isIOS ? (
-              <SymbolView name="clock" tintColor={color} size={22} />
-            ) : (
-              <Feather name="clock" size={22} color={color} />
-            ),
+          tabBarBadge: liveBookings > 0 ? liveBookings : undefined,
+          tabBarIcon: ({ focused, color }) => (
+            <TabIcon
+              icon={focused ? 'clipboard-text' : 'clipboard-text-outline'}
+              color={color}
+              focused={focused}
+            />
+          ),
         }}
       />
       <Tabs.Screen
         name="profile"
         options={{
-          title: 'Profile',
-          tabBarIcon: ({ color }) =>
-            isIOS ? (
-              <SymbolView name="person" tintColor={color} size={22} />
-            ) : (
-              <Feather name="user" size={22} color={color} />
-            ),
+          title: 'Account',
+          tabBarIcon: ({ focused, color }) => (
+            <TabIcon
+              icon={focused ? 'account-circle' : 'account-circle-outline'}
+              color={color}
+              focused={focused}
+            />
+          ),
         }}
       />
     </Tabs>
   );
 }
 
-export default function TabLayout() {
-  if (isLiquidGlassAvailable()) {
-    return <NativeTabLayout />;
-  }
-  return <ClassicTabLayout />;
+/** Icon with a green tint pill behind it while the tab is active. */
+function TabIcon({
+  icon,
+  color,
+  focused,
+}: {
+  icon: MdiName;
+  color: string;
+  focused: boolean;
+}) {
+  const { colors } = useTheme();
+  return (
+    <View style={[styles.iconPill, focused && { backgroundColor: colors.secondary }]}>
+      <MaterialCommunityIcons name={icon} size={21} color={color} />
+    </View>
+  );
 }
+
+const styles = StyleSheet.create({
+  bar: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    height: TAB_BAR_HEIGHT,
+    paddingTop: 8,
+    paddingBottom: 8,
+    borderRadius: radii.xl,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderWidth: StyleSheet.hairlineWidth,
+    elevation: 12,
+  },
+  item: { height: TAB_BAR_HEIGHT - 16 },
+  label: { fontFamily: fonts.semibold, fontSize: 10.5, marginTop: -2 },
+  iconPill: {
+    width: 46,
+    height: 26,
+    borderRadius: radii.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+});

@@ -1,229 +1,369 @@
 import React, { useState } from 'react';
-import {
-  Alert,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Alert, ScrollView, StyleSheet, View } from 'react-native';
+import { router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
-import { Ionicons } from '@expo/vector-icons';
-import { useColors } from '@/hooks/useColors';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useTheme } from '@/hooks/useColors';
+import { useScreenInsets } from '@/hooks/useScreenInsets';
+import { radii, spacing } from '@/constants/theme';
+import { CartBar } from '@/components/CartBar';
+import {
+  Button,
+  Card,
+  Divider,
+  Field,
+  ListRow,
+  SectionHeader,
+  Text,
+} from '@/components/ui';
 import { useAppContext } from '@/context/AppContext';
+import { formatPrice } from '@/lib/catalog';
 
-export default function ProfileScreen() {
-  const colors = useColors();
-  const insets = useSafeAreaInsets();
-  const { user, setUser, apiUrl, saveApiUrl } = useAppContext();
+export default function AccountScreen() {
+  const { colors } = useTheme();
+  const insets = useScreenInsets();
+  const {
+    user,
+    setUser,
+    signOut,
+    addresses,
+    activeAddress,
+    history,
+    credits,
+    apiUrl,
+    saveApiUrl,
+  } = useAppContext();
 
   const [name, setName] = useState(user?.name ?? '');
   const [phone, setPhone] = useState(user?.phone ?? '');
-  const [url, setUrl] = useState(apiUrl);
+  const [editing, setEditing] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  async function handleSave() {
+  const [showDevTools, setShowDevTools] = useState(false);
+  const [url, setUrl] = useState(apiUrl);
+
+  const completed = history.filter((h) => h.status === 'completed' || h.status === 'pending_rating');
+  const lifetimeSpend = completed.reduce((sum, h) => sum + h.total, 0);
+
+  async function handleSaveProfile() {
     if (!name.trim()) {
       Alert.alert('Name required', 'Please enter your name.');
       return;
     }
     if (!/^\d{10}$/.test(phone)) {
-      Alert.alert('Invalid phone', 'Please enter a valid 10-digit mobile number.');
+      Alert.alert('Invalid number', 'Please enter a valid 10-digit mobile number.');
       return;
     }
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    await Promise.all([setUser({ name: name.trim(), phone }), saveApiUrl(url)]);
+    await setUser({ name: name.trim(), phone });
+    setEditing(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
 
-  const topPad = insets.top + (Platform.OS === 'web' ? 67 : 0);
+  function handleSignOut() {
+    Alert.alert('Sign out?', 'Your saved addresses and booking history will be cleared.', [
+      { text: 'Stay signed in', style: 'cancel' },
+      {
+        text: 'Sign out',
+        style: 'destructive',
+        onPress: async () => {
+          await signOut();
+          router.replace('/onboarding');
+        },
+      },
+    ]);
+  }
 
   return (
-    <ScrollView
-      style={{ backgroundColor: colors.background }}
-      contentContainerStyle={[
-        styles.container,
-        {
-          paddingTop: topPad + 16,
-          paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 0) + 100,
-        },
-      ]}
-      showsVerticalScrollIndicator={false}
-    >
-      {/* Avatar */}
-      <View style={styles.avatarSection}>
-        <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
-          <Text style={styles.avatarText}>{(user?.name ?? 'K')[0].toUpperCase()}</Text>
-        </View>
-        <Text style={[styles.profileName, { color: colors.foreground }]}>
-          {user?.name ?? 'Set your name'}
-        </Text>
-        <Text style={[styles.profilePhone, { color: colors.mutedForeground }]}>
-          {user?.phone ? `+91 ${user.phone}` : 'No phone set'}
-        </Text>
-      </View>
-
-      {/* Personal Info */}
-      <View style={[styles.card, { backgroundColor: colors.card }]}>
-        <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>
-          PERSONAL INFO
-        </Text>
-
-        <View style={styles.field}>
-          <Text style={[styles.fieldLabel, { color: colors.foreground }]}>Name</Text>
-          <View style={[styles.inputRow, { backgroundColor: colors.muted, borderColor: colors.border }]}>
-            <Ionicons name="person-outline" size={16} color={colors.mutedForeground} />
-            <TextInput
-              style={[styles.input, { color: colors.foreground }]}
-              value={name}
-              onChangeText={setName}
-              placeholder="Your full name"
-              placeholderTextColor={colors.mutedForeground}
-              autoCapitalize="words"
-            />
-          </View>
-        </View>
-
-        <View style={styles.field}>
-          <Text style={[styles.fieldLabel, { color: colors.foreground }]}>Mobile</Text>
-          <View style={[styles.inputRow, { backgroundColor: colors.muted, borderColor: colors.border }]}>
-            <Text style={[styles.countryCode, { color: colors.foreground }]}>+91</Text>
-            <TextInput
-              style={[styles.input, { color: colors.foreground }]}
-              value={phone}
-              onChangeText={(t) => setPhone(t.replace(/\D/g, '').slice(0, 10))}
-              placeholder="10-digit number"
-              placeholderTextColor={colors.mutedForeground}
-              keyboardType="phone-pad"
-            />
-          </View>
-        </View>
-      </View>
-
-      {/* API Config */}
-      <View style={[styles.card, { backgroundColor: colors.card }]}>
-        <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>
-          BACKEND API
-        </Text>
-        <Text style={[styles.apiHint, { color: colors.mutedForeground }]}>
-          Point this to your Kaaryo backend server.
-        </Text>
-        <View style={styles.field}>
-          <Text style={[styles.fieldLabel, { color: colors.foreground }]}>API URL</Text>
-          <View style={[styles.inputRow, { backgroundColor: colors.muted, borderColor: colors.border }]}>
-            <Ionicons name="link-outline" size={16} color={colors.mutedForeground} />
-            <TextInput
-              style={[styles.input, { color: colors.foreground }]}
-              value={url}
-              onChangeText={setUrl}
-              placeholder="http://localhost:4000"
-              placeholderTextColor={colors.mutedForeground}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-            />
-          </View>
-        </View>
-      </View>
-
-      {/* Save */}
-      <Pressable
-        onPress={handleSave}
-        style={({ pressed }) => [
-          styles.saveBtn,
-          { backgroundColor: saved ? colors.accent : colors.primary, opacity: pressed ? 0.85 : 1 },
-        ]}
+    <View style={[styles.fill, { backgroundColor: colors.background }]}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: insets.tabBarPadding }}
       >
-        <Ionicons name={saved ? 'checkmark' : 'save-outline'} size={20} color="#fff" />
-        <Text style={styles.saveBtnText}>{saved ? 'Saved!' : 'Save Changes'}</Text>
-      </Pressable>
+        {/* ── Identity card ──────────────────────────────────────────────── */}
+        <View
+          style={[
+            styles.hero,
+            { paddingTop: insets.top + spacing.lg, backgroundColor: colors.heroBackground },
+          ]}
+        >
+          <View style={[styles.blob, { backgroundColor: colors.primary }]} />
+          <View style={styles.heroRow}>
+            <View
+              style={[
+                styles.avatar,
+                { backgroundColor: colors.onHeroSurface, borderColor: colors.onHeroBorder },
+              ]}
+            >
+              <Text variant="display" tone="onHero">
+                {(user?.name ?? 'K')[0].toUpperCase()}
+              </Text>
+            </View>
+            <View style={styles.flex}>
+              <Text variant="h1" tone="onHero" numberOfLines={1}>
+                {user?.name ?? 'Set your name'}
+              </Text>
+              <Text variant="body" tone="onHeroMuted">
+                {user?.phone ? `+91 ${user.phone}` : 'No number saved'}
+              </Text>
+            </View>
+          </View>
 
-      <Text style={[styles.version, { color: colors.mutedForeground }]}>
-        Kaaryo v1.0.0 · Cash payment only
+          <View style={styles.heroStats}>
+            <HeroStat value={String(completed.length)} label="Jobs done" />
+            <View style={[styles.heroDivider, { backgroundColor: colors.onHeroBorder }]} />
+            <HeroStat value={formatPrice(credits)} label="Credits" />
+            <View style={[styles.heroDivider, { backgroundColor: colors.onHeroBorder }]} />
+            <HeroStat value={formatPrice(lifetimeSpend)} label="Lifetime spend" />
+          </View>
+        </View>
+
+        <View style={styles.body}>
+          {/* ── Personal details ─────────────────────────────────────────── */}
+          <SectionHeader
+            title="Your details"
+            actionLabel={editing ? 'Cancel' : 'Edit'}
+            onAction={() => {
+              setName(user?.name ?? '');
+              setPhone(user?.phone ?? '');
+              setEditing((prev) => !prev);
+            }}
+            style={styles.sectionTop}
+          />
+
+          {editing ? (
+            <Card padding="lg">
+              <Field
+                label="Full name"
+                icon="account-outline"
+                value={name}
+                onChangeText={setName}
+                placeholder="Your full name"
+                autoCapitalize="words"
+              />
+              <Field
+                label="Mobile number"
+                prefix="+91"
+                value={phone}
+                onChangeText={(text) => setPhone(text.replace(/\D/g, '').slice(0, 10))}
+                placeholder="10-digit number"
+                keyboardType="phone-pad"
+                containerStyle={styles.field}
+              />
+              <Button
+                label="Save changes"
+                icon="content-save-outline"
+                fullWidth
+                onPress={handleSaveProfile}
+                style={styles.field}
+              />
+            </Card>
+          ) : (
+            <Card padding="lg">
+              <ListRow
+                icon="account-outline"
+                label="Name"
+                value={user?.name ?? 'Not set'}
+              />
+              <ListRow
+                icon="phone-outline"
+                label="Mobile"
+                value={user?.phone ? `+91 ${user.phone}` : 'Not set'}
+                last
+              />
+              {saved ? (
+                <>
+                  <Divider spacingY={spacing.md} />
+                  <Text variant="caption" tone="success">
+                    Details saved
+                  </Text>
+                </>
+              ) : null}
+            </Card>
+          )}
+
+          {/* ── Addresses & rewards ──────────────────────────────────────── */}
+          <SectionHeader title="Bookings & saved info" style={styles.sectionTop} />
+          <Card padding="lg">
+            <ListRow
+              icon="map-marker-outline"
+              label="Saved addresses"
+              value={
+                activeAddress
+                  ? `${addresses.length} saved · using ${activeAddress.label}`
+                  : 'No address yet'
+              }
+              onPress={() => router.push('/address')}
+            />
+            <ListRow
+              icon="ticket-percent-outline"
+              label="Offers & rewards"
+              value={`${formatPrice(credits)} in credits`}
+              onPress={() => router.push('/coupons')}
+            />
+            <ListRow
+              icon="clipboard-text-outline"
+              label="My bookings"
+              value={`${history.length} total`}
+              onPress={() => router.push('/(tabs)/bookings')}
+              last
+            />
+          </Card>
+
+          {/* ── Support ──────────────────────────────────────────────────── */}
+          <SectionHeader title="Help & support" style={styles.sectionTop} />
+          <Card padding="lg">
+            <ListRow
+              icon="headset"
+              label="Talk to support"
+              value="7 AM – 11 PM, all days"
+              onPress={() =>
+                Alert.alert(
+                  'Kaaryo support',
+                  'Reach us at 1800-000-000 or care@kaaryo.in. Average response time under 4 minutes.'
+                )
+              }
+            />
+            <ListRow
+              icon="shield-check-outline"
+              label="Safety & verification"
+              onPress={() =>
+                Alert.alert(
+                  'Safety at Kaaryo',
+                  'Every expert clears Aadhaar and PAN verification plus a 2-day training programme before their first booking.'
+                )
+              }
+            />
+            <ListRow
+              icon="file-document-outline"
+              label="Terms & privacy"
+              onPress={() =>
+                Alert.alert(
+                  'Terms & privacy',
+                  'Your name, number and address are used only to dispatch and complete your bookings.'
+                )
+              }
+              last
+            />
+          </Card>
+
+          {/* ── Appearance note ──────────────────────────────────────────── */}
+          <Card tone="tint" padding="md" style={styles.sectionTop} bordered={false}>
+            <View style={styles.themeRow}>
+              <MaterialCommunityIcons
+                name="theme-light-dark"
+                size={18}
+                color={colors.secondaryForeground}
+              />
+              <Text variant="caption" style={[styles.flex, { color: colors.secondaryForeground }]}>
+                Kaaryo follows your system light or dark appearance automatically.
+              </Text>
+            </View>
+          </Card>
+
+          {/* ── Developer ────────────────────────────────────────────────── */}
+          <SectionHeader
+            title="Developer"
+            subtitle="Point the app at your Kaaryo backend"
+            actionLabel={showDevTools ? 'Hide' : 'Show'}
+            onAction={() => setShowDevTools((prev) => !prev)}
+            style={styles.sectionTop}
+          />
+          {showDevTools ? (
+            <Card padding="lg">
+              <Field
+                label="API base URL"
+                icon="link-variant"
+                value={url}
+                onChangeText={setUrl}
+                placeholder="http://localhost:4000"
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+              />
+              <Button
+                label="Save API URL"
+                variant="secondary"
+                fullWidth
+                onPress={async () => {
+                  await saveApiUrl(url);
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                }}
+                style={styles.field}
+              />
+            </Card>
+          ) : null}
+
+          <Button
+            label="Sign out"
+            variant="destructive"
+            icon="logout"
+            fullWidth
+            haptic={false}
+            onPress={handleSignOut}
+            style={styles.signOut}
+          />
+
+          <Text variant="caption" tone="muted" center>
+            Kaaryo v2.0.0 · Made for Indian homes
+          </Text>
+        </View>
+      </ScrollView>
+
+      <CartBar bottomInset={insets.bottom} />
+    </View>
+  );
+}
+
+function HeroStat({ value, label }: { value: string; label: string }) {
+  const { colors } = useTheme();
+  return (
+    <View style={styles.heroStat}>
+      <Text variant="h3" tone="onHero" numberOfLines={1}>
+        {value}
       </Text>
-    </ScrollView>
+      <Text variant="micro" style={{ color: colors.onHeroMuted }} center>
+        {label}
+      </Text>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { paddingHorizontal: 16 },
-  avatarSection: { alignItems: 'center', marginBottom: 28 },
+  fill: { flex: 1 },
+  flex: { flex: 1 },
+  hero: {
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.xl,
+    borderBottomLeftRadius: radii.xl,
+    borderBottomRightRadius: radii.xl,
+    overflow: 'hidden',
+  },
+  blob: {
+    position: 'absolute',
+    width: 200,
+    height: 200,
+    borderRadius: 999,
+    opacity: 0.16,
+    top: -100,
+    right: -60,
+  },
+  heroRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.lg },
   avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 12,
-  },
-  avatarText: {
-    fontSize: 36,
-    fontFamily: 'Inter_700Bold',
-    color: '#fff',
-  },
-  profileName: {
-    fontSize: 22,
-    fontFamily: 'Inter_700Bold',
-    letterSpacing: -0.3,
-  },
-  profilePhone: { fontSize: 14, fontFamily: 'Inter_400Regular', marginTop: 4 },
-  card: {
-    borderRadius: 18,
-    padding: 20,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  sectionLabel: {
-    fontSize: 11,
-    fontFamily: 'Inter_600SemiBold',
-    letterSpacing: 0.8,
-    marginBottom: 14,
-  },
-  apiHint: { fontSize: 13, fontFamily: 'Inter_400Regular', marginBottom: 12, marginTop: -8 },
-  field: { marginBottom: 14 },
-  fieldLabel: {
-    fontSize: 13,
-    fontFamily: 'Inter_600SemiBold',
-    marginBottom: 6,
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    gap: 10,
     borderWidth: 1,
   },
-  countryCode: { fontSize: 15, fontFamily: 'Inter_600SemiBold' },
-  input: { flex: 1, fontSize: 15, fontFamily: 'Inter_400Regular' },
-  saveBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 14,
-    paddingVertical: 15,
-    gap: 8,
-    marginTop: 4,
-    marginBottom: 20,
-    shadowColor: '#FF5533',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  saveBtnText: {
-    fontSize: 16,
-    fontFamily: 'Inter_700Bold',
-    color: '#fff',
-  },
-  version: { textAlign: 'center', fontSize: 12, fontFamily: 'Inter_400Regular' },
+  heroStats: { flexDirection: 'row', alignItems: 'center', marginTop: spacing.xl },
+  heroStat: { flex: 1, alignItems: 'center', gap: 2 },
+  heroDivider: { width: StyleSheet.hairlineWidth, height: 32 },
+  body: { paddingHorizontal: spacing.lg },
+  sectionTop: { marginTop: spacing['2xl'] },
+  field: { marginTop: spacing.lg },
+  themeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  signOut: { marginTop: spacing['2xl'], marginBottom: spacing.lg },
 });

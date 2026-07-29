@@ -48,17 +48,45 @@ export interface ServiceRequest {
   completedAt?: string;
   cancelledAt?: string;
   expiredAt?: string;
+  /**
+   * Start code the customer reads out to the expert. Only rendered when the
+   * backend issues one — the app never fabricates it.
+   */
+  otp?: string;
+}
+
+/** One line of a multi-task booking. */
+export interface RequestItem {
+  serviceKey: string;
+  serviceName: string;
+  durationKey: string;
+  durationLabel: string;
+  quantity: number;
+  unitPrice: number;
+  minutes: number;
 }
 
 export interface CreateRequestBody {
   customerName: string;
   customerPhone: string;
+  /** Primary service key — the first task in the cart. */
   category: string;
   subcategory?: string | null;
   jobDescription: string;
   lat: number;
   lng: number;
   address?: string;
+  /**
+   * Full cart. Additive to the original contract: backends that only understand
+   * `category` + `jobDescription` ignore these fields.
+   */
+  items?: RequestItem[];
+  mode?: 'instant' | 'schedule';
+  /** Slot label for scheduled bookings. */
+  scheduledFor?: string | null;
+  /** Amount quoted at checkout, in rupees. */
+  quotedTotal?: number;
+  estimatedMinutes?: number;
 }
 
 export interface CreateRequestResponse {

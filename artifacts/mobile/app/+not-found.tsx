@@ -1,44 +1,28 @@
-import { Link, Stack } from 'expo-router';
-import { StyleSheet, Text, View } from 'react-native';
-import { useColors } from '@/hooks/useColors';
+import React from 'react';
+import { StyleSheet, View } from 'react-native';
+import { router, Stack } from 'expo-router';
+import { useTheme } from '@/hooks/useColors';
+import { Button, EmptyState } from '@/components/ui';
 
 export default function NotFoundScreen() {
-  const colors = useColors();
+  const { colors } = useTheme();
 
   return (
     <>
-      <Stack.Screen options={{ title: 'Oops!' }} />
+      <Stack.Screen options={{ headerShown: false }} />
       <View style={[styles.container, { backgroundColor: colors.background }]}>
-        <Text style={[styles.title, { color: colors.foreground }]}>
-          This screen doesn&apos;t exist.
-        </Text>
-
-        <Link href="/" style={styles.link}>
-          <Text style={[styles.linkText, { color: colors.primary }]}>
-            Go to home screen!
-          </Text>
-        </Link>
+        <EmptyState
+          icon="compass-off-outline"
+          title="This page moved"
+          message="The screen you were looking for is no longer part of Kaaryo."
+        >
+          <Button label="Go to home" onPress={() => router.replace('/(tabs)')} />
+        </EmptyState>
       </View>
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  link: {
-    marginTop: 15,
-    paddingVertical: 15,
-  },
-  linkText: {
-    fontSize: 14,
-  },
+  container: { flex: 1, justifyContent: 'center' },
 });

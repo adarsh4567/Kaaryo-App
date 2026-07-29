@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
+import { fonts, radii } from '@/constants/theme';
 import { Feather } from '@expo/vector-icons';
 import { reloadAppAsync } from 'expo';
 
@@ -68,12 +69,16 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
       ) : null}
 
       <View style={styles.content}>
+        <View style={[styles.icon, { backgroundColor: colors.secondary }]}>
+          <Feather name="alert-triangle" size={30} color={colors.secondaryForeground} />
+        </View>
+
         <Text style={[styles.title, { color: colors.foreground }]}>
           Something went wrong
         </Text>
 
         <Text style={[styles.message, { color: colors.mutedForeground }]}>
-          Please reload the app to continue.
+          Reload Kaaryo to continue. Your cart and bookings are saved.
         </Text>
 
         <Pressable
@@ -87,10 +92,8 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
             },
           ]}
         >
-          <Text
-            style={[styles.buttonText, { color: colors.primaryForeground }]}
-          >
-            Try Again
+          <Text style={[styles.buttonText, { color: colors.primaryForeground }]}>
+            Reload app
           </Text>
         </Pressable>
       </View>
@@ -183,23 +186,32 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 600,
   },
+  icon: {
+    width: 68,
+    height: 68,
+    borderRadius: radii.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   title: {
-    fontSize: 28,
-    fontWeight: '700',
+    fontFamily: fonts.bold,
+    fontSize: 26,
+    letterSpacing: -0.5,
     textAlign: 'center',
-    lineHeight: 40,
+    lineHeight: 34,
   },
   message: {
-    fontSize: 16,
+    fontFamily: fonts.regular,
+    fontSize: 15,
     textAlign: 'center',
-    lineHeight: 24,
+    lineHeight: 22,
   },
   topButton: {
     position: 'absolute',
     right: 16,
     width: 44,
     height: 44,
-    borderRadius: 8,
+    borderRadius: radii.md,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -207,20 +219,12 @@ const styles = StyleSheet.create({
   },
   button: {
     paddingVertical: 16,
-    borderRadius: 8,
+    borderRadius: radii.md,
     paddingHorizontal: 24,
     minWidth: 200,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
   },
   buttonText: {
-    fontWeight: '600',
+    fontFamily: fonts.bold,
     textAlign: 'center',
     fontSize: 16,
   },
