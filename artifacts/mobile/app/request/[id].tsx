@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -15,6 +15,8 @@ import { useTheme } from '@/hooks/useColors';
 import { useScreenInsets } from '@/hooks/useScreenInsets';
 import { radii, spacing } from '@/constants/theme';
 import { MapBackdrop } from '@/components/MapBackdrop';
+import { LiveTrackingMap } from '@/components/map/LiveTrackingMap';
+import { WorkerAvatar } from '@/components/WorkerAvatar';
 import {
   Badge,
   BottomBar,
@@ -35,7 +37,9 @@ import {
   retryUserRequest,
   secondsLeft,
   trackUserRequest,
+  type AssignedWorker,
   type PaymentMethod,
+  type RequestStage,
   type UserRequest,
 } from '@/lib/userRequests';
 import { formatPrice, type MdiName } from '@/lib/catalog';
@@ -48,6 +52,37 @@ const METHODS: { key: PaymentMethod; label: string; detail: string; icon: MdiNam
   { key: 'netbanking', label: 'Net banking', detail: 'All major banks', icon: 'bank-outline' },
   { key: 'wallet', label: 'Wallet', detail: 'Prepaid balance', icon: 'wallet-outline' },
 ];
+
+/**
+ * The header subtitle, keyed off `stage` — the server-composed field that's
+ * authoritative for what to render, not off `status`. `completed` still splits
+ * on `paid` for a nicer final line; every other row matches the backend's copy
+ * table exactly.
+ */
+function subtitleForStage(stage: RequestStage, worker: AssignedWorker | undefined, paid: boolean): string {
+  switch (stage) {
+    case 'searching':
+      return 'Finding a professional';
+    case 'en_route':
+      return 'Professional on the way';
+    case 'arriving_soon':
+      return worker?.etaMinutes != null ? `Arriving in ~${worker.etaMinutes} min` : 'Arriving soon';
+    case 'arrived':
+      return 'Your professional has arrived';
+    case 'working':
+      return 'Work in progress';
+    case 'work_done':
+      return 'Work complete — payment due';
+    case 'completed':
+      return paid ? 'Paid' : 'Completed';
+    case 'cancelled':
+      return 'Cancelled';
+    case 'expired':
+      return 'Nobody accepted';
+    default:
+      return 'Professional on the way';
+  }
+}
 
 /** Where a request is in its life, for the timeline. */
 const STEPS: { label: string; reached: (r: UserRequest) => boolean }[] = [
@@ -81,6 +116,8 @@ export default function RequestScreen() {
   const [countdown, setCountdown] = useState(0);
 
   const attempt = request?.attempt;
+  /** Tracked outside state so the arrival haptic fires once per transition, not per render. */
+  const prevStageRef = useRef<RequestStage | undefined>(undefined);
 
   useEffect(() => {
     if (!token || !id) return;
@@ -89,6 +126,7 @@ export default function RequestScreen() {
     getUserRequest(token, id)
       .then((fresh) => {
         if (cancelled) return;
+        prevStageRef.current = fresh.stage;
         setRequest(fresh);
         mergeRequest(fresh);
       })
@@ -111,6 +149,10 @@ export default function RequestScreen() {
   useEffect(() => {
     if (!token || !id || loading) return;
     return trackUserRequest(token, id, (next) => {
+      if (next.stage === 'arrived' && prevStageRef.current !== 'arrived') {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+      prevStageRef.current = next.stage;
       setRequest(next);
       mergeRequest(next);
     });
@@ -234,9 +276,13 @@ export default function RequestScreen() {
 
   const worker = request.worker;
   const paid = request.payment.status === 'paid';
-  const searching = request.status === 'searching';
-  const expired = request.status === 'expired';
-  const cancelled = request.status === 'cancelled';
+  const stage = request.stage;
+  const searching = stage === 'searching';
+  const expired = stage === 'expired';
+  const cancelled = stage === 'cancelled';
+  // The map only means something while a professional is actually travelling —
+  // from 'working' onward the screen is about the job and the payment, not location.
+  const showLiveMap = stage === 'en_route' || stage === 'arriving_soon' || stage === 'arrived';
   const title = request.subcategoryName
     ? `${request.categoryName} · ${request.subcategoryName}`
     : request.categoryName;
@@ -265,17 +311,7 @@ export default function RequestScreen() {
     <View style={[styles.fill, { backgroundColor: colors.background }]}>
       <TrackHeader
         title={title}
-        subtitle={
-          searching
-            ? 'Finding a professional'
-            : expired
-              ? 'Nobody accepted'
-              : paid
-                ? 'Paid'
-                : request.payment.payable
-                  ? 'Work done — payment due'
-                  : 'Professional on the way'
-        }
+        subtitle={subtitleForStage(stage, worker, paid)}
         topInset={insets.top}
       />
 
@@ -283,13 +319,26 @@ export default function RequestScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: insets.bottom + 130 }}
       >
-        <MapBackdrop
-          height={searching ? 220 : 190}
-          radar={searching}
-          pulsing={!searching}
-          showExperts={!expired}
-          caption={request.address || 'Your address'}
-        />
+        {searching ? (
+          <MapBackdrop
+            height={220}
+            radar
+            showExperts
+            caption={request.address || 'Your address'}
+          />
+        ) : showLiveMap ? (
+          <LiveTrackingMap
+            height={190}
+            destination={request.location?.coordinates}
+            worker={worker?.location?.coordinates}
+            heading={worker?.heading}
+            arrived={stage === 'arrived'}
+            locationStale={worker?.locationStale}
+            caption={request.address || 'Your address'}
+            expandable
+            expandedTitle={subtitleForStage(stage, worker, paid)}
+          />
+        ) : null}
 
         <View style={styles.body}>
           {/* ── Searching ────────────────────────────────────────────────── */}
@@ -328,11 +377,7 @@ export default function RequestScreen() {
           {worker ? (
             <Card padding="lg" style={styles.headCard}>
               <View style={styles.workerTop}>
-                <View style={[styles.avatar, { backgroundColor: colors.secondary }]}>
-                  <Text variant="h1" style={{ color: colors.secondaryForeground }}>
-                    {worker.name[0].toUpperCase()}
-                  </Text>
-                </View>
+                <WorkerAvatar photoUrl={worker.photoUrl} name={worker.name} size={64} />
                 <View style={styles.flex}>
                   <Text variant="h3" numberOfLines={1}>
                     {worker.name}
@@ -701,13 +746,6 @@ const styles = StyleSheet.create({
   },
   headSub: { marginTop: spacing.sm },
   workerTop: { flexDirection: 'row', alignItems: 'center', gap: spacing.lg },
-  avatar: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   workerMeta: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },
   workerBadge: { marginTop: spacing.sm },
   workerActions: { flexDirection: 'row', gap: spacing.sm },

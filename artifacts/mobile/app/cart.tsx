@@ -16,13 +16,12 @@ import {
   Divider,
   EmptyState,
   IconBubble,
-  Segmented,
   Stepper,
   Text,
 } from '@/components/ui';
-import { PLATFORM_FEE, useAppContext, type BookingMode } from '@/context/AppContext';
+import { PLATFORM_FEE, useAppContext } from '@/context/AppContext';
 import { createServiceRequest, type RequestItem } from '@/lib/api';
-import { formatMinutes, formatPrice, getGroup } from '@/lib/catalog';
+import { formatMinutes, formatPrice } from '@/lib/catalog';
 import { buildSlots } from '@/lib/slots';
 
 export default function CartScreen() {
@@ -37,8 +36,6 @@ export default function CartScreen() {
     incrementItem,
     decrementItem,
     clearCart,
-    mode,
-    setMode,
     scheduledSlot,
     setScheduledSlot,
     appliedCoupon,
@@ -54,10 +51,12 @@ export default function CartScreen() {
 
   const slots = useMemo(() => buildSlots(8), []);
 
-  /** Repairs and deep cleaning cannot be dispatched in 10 minutes. */
-  const instantBlockedBy = cartLines.find((line) => !getGroup(line.service.group).supportsInstant);
-  const effectiveMode: BookingMode = instantBlockedBy ? 'schedule' : mode;
-  const needsSlot = effectiveMode === 'schedule' && !scheduledSlot;
+  /**
+   * The cart is scheduling-only. Instant bookings never come through here — they
+   * go out from the instant sheet on the home screen straight to dispatch — so
+   * there is no mode to pick and a slot is always required.
+   */
+  const needsSlot = !scheduledSlot;
 
   if (itemCount === 0) {
     return (
@@ -114,9 +113,7 @@ export default function CartScreen() {
         (line) =>
           `${line.quantity}× ${line.service.name} (${line.duration.label}) — ${formatPrice(line.lineTotal)}`
       ),
-      `Total ${formatMinutes(totalMinutes)} · ${formatPrice(total)} · ${
-        effectiveMode === 'instant' ? 'Instant' : `Scheduled for ${scheduledSlot}`
-      }`,
+      `Total ${formatMinutes(totalMinutes)} · ${formatPrice(total)} · Scheduled for ${scheduledSlot}`,
     ].join('\n');
 
     try {
@@ -134,8 +131,8 @@ export default function CartScreen() {
           .filter(Boolean)
           .join(', '),
         items,
-        mode: effectiveMode,
-        scheduledFor: effectiveMode === 'schedule' ? scheduledSlot : null,
+        mode: 'schedule',
+        scheduledFor: scheduledSlot,
         quotedTotal: total,
         estimatedMinutes: totalMinutes,
       });
@@ -148,8 +145,8 @@ export default function CartScreen() {
         itemCount,
         total,
         minutes: totalMinutes,
-        mode: effectiveMode,
-        slot: effectiveMode === 'schedule' ? (scheduledSlot ?? undefined) : undefined,
+        mode: 'schedule',
+        slot: scheduledSlot ?? undefined,
         createdAt: response.request.createdAt,
         status: 'searching',
       });
@@ -180,65 +177,26 @@ export default function CartScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + 130 }]}
       >
-        {/* ── Dispatch mode ────────────────────────────────────────────────── */}
-        <Segmented<BookingMode>
-          value={effectiveMode}
-          onChange={setMode}
-          options={[
-            { value: 'instant', label: 'Instant', icon: 'lightning-bolt' },
-            { value: 'schedule', label: 'Schedule', icon: 'calendar-clock' },
-          ]}
-        />
-
-        {instantBlockedBy ? (
-          <Card tone="warning" padding="md" style={styles.notice}>
-            <View style={styles.noticeRow}>
-              <MaterialCommunityIcons
-                name="information-outline"
-                size={17}
-                color={colors.warning}
-              />
-              <Text variant="caption" style={[styles.flex, { color: colors.warning }]}>
-                {instantBlockedBy.service.name} needs machines and a fixed slot, so this booking
-                is scheduled rather than instant.
-              </Text>
-            </View>
-          </Card>
-        ) : effectiveMode === 'instant' ? (
-          <Card tone="tint" padding="md" style={styles.notice}>
-            <View style={styles.noticeRow}>
-              <MaterialCommunityIcons name="lightning-bolt" size={17} color={colors.primary} />
-              <Text variant="caption" style={[styles.flex, { color: colors.secondaryForeground }]}>
-                An expert reaches you in about 10 minutes of confirming.
-              </Text>
-            </View>
-          </Card>
-        ) : null}
-
         {/* ── Slot picker ──────────────────────────────────────────────────── */}
-        {effectiveMode === 'schedule' ? (
-          <>
-            <Text variant="h3" style={styles.sectionTitle}>
-              Pick a time
-            </Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={styles.slotBleed}
-              contentContainerStyle={styles.slotRow}
-            >
-              {slots.map((slot) => (
-                <Chip
-                  key={slot.key}
-                  label={slot.day}
-                  sublabel={slot.time}
-                  selected={scheduledSlot === slot.label}
-                  onPress={() => setScheduledSlot(slot.label)}
-                />
-              ))}
-            </ScrollView>
-          </>
-        ) : null}
+        <Text variant="h3" style={styles.slotTitle}>
+          Pick a time
+        </Text>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.slotBleed}
+          contentContainerStyle={styles.slotRow}
+        >
+          {slots.map((slot) => (
+            <Chip
+              key={slot.key}
+              label={slot.day}
+              sublabel={slot.time}
+              selected={scheduledSlot === slot.label}
+              onPress={() => setScheduledSlot(slot.label)}
+            />
+          ))}
+        </ScrollView>
 
         {/* ── Line items ───────────────────────────────────────────────────── */}
         <Text variant="h3" style={styles.sectionTitle}>
@@ -405,9 +363,7 @@ export default function CartScreen() {
           <View>
             <Text variant="h2">{formatPrice(total)}</Text>
             <Text variant="caption" tone="muted">
-              {effectiveMode === 'instant'
-                ? 'Arriving in ~10 min'
-                : (scheduledSlot ?? 'Pick a slot above')}
+              {scheduledSlot ?? 'Pick a slot above'}
             </Text>
           </View>
           <Button
@@ -495,6 +451,7 @@ const styles = StyleSheet.create({
   notice: { marginTop: spacing.md },
   noticeRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
   sectionTitle: { marginTop: spacing.xl, marginBottom: spacing.md },
+  slotTitle: { marginBottom: spacing.md },
   slotBleed: { marginHorizontal: -spacing.lg },
   slotRow: { paddingHorizontal: spacing.lg, gap: spacing.sm },
   hairline: { height: StyleSheet.hairlineWidth, marginHorizontal: spacing.lg },

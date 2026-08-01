@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Animated, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -7,6 +7,7 @@ import { useTheme } from '@/hooks/useColors';
 import { findCategory, useServiceCatalog } from '@/hooks/useServiceCatalog';
 import { useTrialOffer } from '@/hooks/useTrialOffer';
 import { radii, spacing } from '@/constants/theme';
+import { useScreenInsets } from '@/hooks/useScreenInsets';
 import {
   Badge,
   BottomSheet,
@@ -58,7 +59,8 @@ export function InstantBookingSheet({
   onClose: () => void;
 }) {
   const { colors } = useTheme();
-  const { activeAddress, token } = useAppContext();
+  const insets = useScreenInsets();
+  const { activeAddress, addresses, selectAddress, token } = useAppContext();
   const { categories, isLoading, error, reload } = useServiceCatalog();
 
   const [subcategory, setSubcategory] = useState<string | null>(null);
@@ -74,6 +76,28 @@ export function InstantBookingSheet({
   const [step, setStep] = useState<'brief' | 'who'>('brief');
   const [choice, setChoice] = useState<WorkerChoice>('experienced');
   const [trialSubcategory, setTrialSubcategory] = useState<string | null>(null);
+
+  /** Controls the inline address-picker slide-up panel. */
+  const [showAddressPicker, setShowAddressPicker] = useState(false);
+  const pickerAnim = useRef(new Animated.Value(0)).current;
+
+  function openAddressPicker() {
+    setShowAddressPicker(true);
+    Animated.spring(pickerAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      tension: 280,
+      friction: 24,
+    }).start();
+  }
+
+  function closeAddressPicker() {
+    Animated.timing(pickerAnim, {
+      toValue: 0,
+      duration: 180,
+      useNativeDriver: true,
+    }).start(() => setShowAddressPicker(false));
+  }
 
   const remoteKey = getRemoteCategory(service);
   const category = findCategory(categories, remoteKey);
@@ -100,6 +124,8 @@ export function InstantBookingSheet({
       setStep('brief');
       setChoice('experienced');
       setTrialSubcategory(null);
+      setShowAddressPicker(false);
+      pickerAnim.setValue(0);
     }
   }, [visible, service.key]);
 
@@ -370,44 +396,48 @@ export function InstantBookingSheet({
               placeholder="Gate code, pets at home, which room to start with…"
               hint="Your professional reads this before they set off"
             />
-
-            {/* ── Where ────────────────────────────────────────────────────── */}
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                onClose();
-                router.push('/address');
-              }}
-              style={({ pressed }) => [
-                styles.addressRow,
-                {
-                  backgroundColor: hasLocation ? colors.muted : colors.warningLight,
-                  opacity: pressed ? 0.8 : 1,
-                },
-              ]}
-            >
-              <MaterialCommunityIcons
-                name={hasLocation ? 'map-marker-outline' : 'map-marker-alert-outline'}
-                size={18}
-                color={hasLocation ? colors.mutedForeground : colors.warning}
-              />
-              <Text
-                variant="caption"
-                tone={hasLocation ? 'muted' : 'warning'}
-                style={styles.flex}
-                numberOfLines={1}
-              >
-                {hasLocation
-                  ? [activeAddress?.line, activeAddress?.locality].filter(Boolean).join(', ')
-                  : 'No service address pinned yet'}
-              </Text>
-              <Text variant="captionSemi" tone="primary">
-                {hasLocation ? 'Change' : 'Add'}
-              </Text>
-            </Pressable>
           </>
         )}
       </ScrollView>
+
+      {/* ── Where (always visible, outside the scroll) ───────────────────── */}
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => {
+          if (hasLocation) {
+            openAddressPicker();
+          } else {
+            onClose();
+            router.push('/address');
+          }
+        }}
+        style={({ pressed }) => [
+          styles.addressRow,
+          {
+            backgroundColor: hasLocation ? colors.muted : colors.warningLight,
+            opacity: pressed ? 0.8 : 1,
+          },
+        ]}
+      >
+        <MaterialCommunityIcons
+          name={hasLocation ? 'map-marker-outline' : 'map-marker-alert-outline'}
+          size={18}
+          color={hasLocation ? colors.mutedForeground : colors.warning}
+        />
+        <Text
+          variant="caption"
+          tone={hasLocation ? 'muted' : 'warning'}
+          style={styles.flex}
+          numberOfLines={1}
+        >
+          {hasLocation
+            ? [activeAddress?.line, activeAddress?.locality].filter(Boolean).join(', ')
+            : 'No service address pinned yet'}
+        </Text>
+        <Text variant="captionSemi" tone="primary">
+          {hasLocation ? 'Change' : 'Add'}
+        </Text>
+      </Pressable>
 
       {/* ── Book ───────────────────────────────────────────────────────────── */}
       <View style={[styles.footer, { borderTopColor: colors.border }]}>
@@ -427,6 +457,115 @@ export function InstantBookingSheet({
           onPress={handleBook}
         />
       </View>
+
+      {/* ── Inline address picker ───────────────────────────────────────────── */}
+      {showAddressPicker ? (
+        <Animated.View
+          style={[
+            styles.pickerPanel,
+            {
+              backgroundColor: colors.muted,
+              borderTopColor: colors.border,
+              // Match the BottomSheet's own paddingBottom so the panel clears the safe area.
+              bottom: insets.bottom + spacing.lg,
+              transform: [
+                {
+                  translateY: pickerAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [320, 0],
+                  }),
+                },
+              ],
+            },
+          ]}
+        >
+          {/* Panel header */}
+          <View style={[styles.pickerHeader, { backgroundColor: colors.muted, borderBottomColor: colors.border }]}>
+            <Text variant="h3">Choose address</Text>
+            <Pressable
+              onPress={closeAddressPicker}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel="Close address picker"
+            >
+              <MaterialCommunityIcons name="close" size={20} color={colors.mutedForeground} />
+            </Pressable>
+          </View>
+
+          {/* Saved address list */}
+          <ScrollView
+            style={styles.pickerScroll}
+            contentContainerStyle={styles.pickerScrollBody}
+            showsVerticalScrollIndicator={false}
+          >
+            {addresses.map((addr) => {
+              const isActive = addr.id === activeAddress?.id;
+              return (
+                <Pressable
+                  key={addr.id}
+                  accessibilityRole="button"
+                  onPress={async () => {
+                    Haptics.selectionAsync();
+                    await selectAddress(addr.id);
+                    closeAddressPicker();
+                  }}
+                  style={({ pressed }) => [
+                    styles.pickerItem,
+                    {
+                      backgroundColor: isActive ? colors.muted : colors.card,
+                      borderColor: isActive ? colors.primary : colors.border,
+                      opacity: pressed ? 0.75 : 1,
+                    },
+                  ]}
+                >
+                  <View style={styles.pickerItemIcon}>
+                    <MaterialCommunityIcons
+                      name={isActive ? 'map-marker' : 'map-marker-outline'}
+                      size={20}
+                      color={isActive ? colors.primary : colors.mutedForeground}
+                    />
+                  </View>
+                  <View style={styles.flex}>
+                    <Text
+                      variant="captionSemi"
+                      style={{ color: isActive ? colors.primary : colors.foreground }}
+                      numberOfLines={1}
+                    >
+                      {addr.label}
+                    </Text>
+                    <Text variant="caption" tone="muted" numberOfLines={2}>
+                      {[addr.line, addr.locality, addr.city].filter(Boolean).join(', ')}
+                    </Text>
+                  </View>
+                  {isActive ? (
+                    <MaterialCommunityIcons
+                      name="check-circle"
+                      size={18}
+                      color={colors.primary}
+                    />
+                  ) : null}
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+
+          {/* Add new address */}
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              closeAddressPicker();
+              onClose();
+              router.push('/address');
+            }}
+            style={[styles.pickerAddNew, { borderTopColor: colors.border }]}
+          >
+            <MaterialCommunityIcons name="plus-circle-outline" size={18} color={colors.primary} />
+            <Text variant="captionSemi" tone="primary">
+              Add new address
+            </Text>
+          </Pressable>
+        </Animated.View>
+      ) : null}
     </BottomSheet>
   );
 }
@@ -475,7 +614,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    marginTop: spacing.lg,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    marginBottom: spacing.sm,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
     borderRadius: radii.md,
@@ -486,6 +627,53 @@ const styles = StyleSheet.create({
     gap: spacing.lg,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.lg,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  // ── Inline address picker ──────────────────────────────────────────────────
+  pickerPanel: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    // bottom is set dynamically from insets to sit above the safe area.
+    maxHeight: 340,
+    flexDirection: 'column',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopLeftRadius: radii.xl,
+    borderTopRightRadius: radii.xl,
+    overflow: 'hidden',
+  },
+  pickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  pickerScroll: { flex: 1 },
+  pickerScrollBody: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    gap: spacing.sm,
+  },
+  pickerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radii.md,
+    borderWidth: 1,
+  },
+  pickerItemIcon: {
+    width: 32,
+    alignItems: 'center',
+  },
+  pickerAddNew: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
   },
 });

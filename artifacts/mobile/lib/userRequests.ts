@@ -70,17 +70,79 @@ export interface RequestPayment {
   paidAt: string | null;
 }
 
+export type WorkerArrivalStatus = 'en_route' | 'arriving_soon' | 'arrived';
+
+/**
+ * The composed, render-off-this state — `status` + `workStage` + the server's
+ * geofence, in that precedence. Exists so the header, the badge and the
+ * timeline can't disagree with each other, and so the list card and the detail
+ * screen can't disagree either (`stage` is on the summary view too).
+ *
+ * `en_route` / `arriving_soon` / `arrived` / `working` are all `status:
+ * 'in_progress'` underneath — `status` stays authoritative for payment,
+ * cancel and retry, `stage` is authoritative for what you render.
+ */
+export type RequestStage =
+  | 'searching'
+  | 'en_route'
+  | 'arriving_soon'
+  | 'arrived'
+  | 'working'
+  | 'work_done'
+  | 'completed'
+  | 'cancelled'
+  | 'expired';
+
+/** The raw sub-field `stage` is composed from. Rarely needed directly. */
+export type WorkStage = 'en_route' | 'working' | null;
+
 /** Present only once a professional has accepted. */
 export interface AssignedWorker {
   id: string;
   name: string;
   phone: string;
+  /**
+   * Static, cacheable URL to a square headshot — present (as a key) on every
+   * `worker` the server sends, `null` rather than omitted when the worker has
+   * no photo on file. Loadable directly with no auth header. Fall back to the
+   * initials avatar on `null`, never hide the card.
+   */
+  photoUrl: string | null;
   /** Null for a professional with no ratings yet — render "New", not 0. */
   rating: number | null;
   jobsCompleted: number;
+  /** Measured when the offer went out — fixed, historical. Show this on the card. */
   distanceKm: number;
-  /** Last availability heartbeat, not a live stream. There is no ETA. */
+
+  // ── Live tracking fields — present only while `stage` is 'en_route' /
+  // 'arriving_soon' / 'arrived' / 'working'. Absent on a settled request, not
+  // just unpinged — don't treat a missing `location` on a finished job as
+  // "hasn't pinged yet". Gate rendering on `stage`, not on these being present.
+  /** GeoJSON `[lng, lat]`. This job's own live stream — falls back to the
+   * worker's last availability heartbeat until the first real ping lands. */
   location?: { type: string; coordinates: [number, number] };
+  /** ISO timestamp of the last GPS ping. */
+  locationUpdatedAt?: string;
+  /** True when that fix is over ~60s old — grey the marker, don't hide it. */
+  locationStale?: boolean;
+  /** Compass heading 0-360. Rotate the marker by this. */
+  heading?: number | null;
+  speedKmh?: number;
+  /** Live straight-line distance, in metres. */
+  distanceMeters?: number;
+  /** Same distance as `distanceMeters`, in km — show this in the map header, never `distanceKm`. */
+  liveDistanceKm?: number;
+  /** Null until an estimate exists. */
+  etaMinutes?: number | null;
+  /** 'estimate' = straight-line ÷ assumed speed, word it with a "~". 'directions' = a routing provider answered. */
+  etaSource?: 'estimate' | 'directions';
+  /**
+   * The server's verdict, with hysteresis and an accuracy gate behind it.
+   * Never re-derive this from `location` — one bad GPS fix must not show
+   * "Arrived" on this phone while the server and the worker's app disagree.
+   */
+  arrivalStatus?: WorkerArrivalStatus;
+  arrivalStatusChangedAt?: string;
 }
 
 /**
@@ -90,6 +152,10 @@ export interface AssignedWorker {
 export interface UserRequest {
   id: string;
   status: UserRequestStatus;
+  /** Render the header/badge/timeline off this, not off `status`. Always present. */
+  stage: RequestStage;
+  /** The raw sub-field `stage` is partly composed from. Rarely needed directly. */
+  workStage?: WorkStage;
   category: string;
   categoryName: string;
   subcategory: string | null;
@@ -466,6 +532,22 @@ const POLL_INTERVAL: Partial<Record<UserRequestStatus, number>> = {
   pending_rating: 12000,
 };
 
+/**
+ * While the worker is actually moving (`en_route` / `arriving_soon`), poll
+ * faster than the base `in_progress` interval so the map doesn't visibly lag —
+ * this is the documented fallback for the socket channel, not a replacement
+ * for it. Once `arrived` or `working`, nobody is moving anymore, so the base
+ * interval is plenty.
+ */
+const IN_PROGRESS_TRACKING_INTERVAL = 4500;
+
+function pollIntervalFor(request: UserRequest): number | undefined {
+  if (request.stage === 'en_route' || request.stage === 'arriving_soon') {
+    return IN_PROGRESS_TRACKING_INTERVAL;
+  }
+  return POLL_INTERVAL[request.status];
+}
+
 /** Backoff after a network failure — slower than any healthy interval. */
 const ERROR_INTERVAL = 6000;
 
@@ -498,7 +580,7 @@ export function trackUserRequest(
       if (stopped) return;
       onUpdate(request);
 
-      const next = POLL_INTERVAL[request.status];
+      const next = pollIntervalFor(request);
       // Expired is not terminal — the customer may retry — but nothing moves
       // until they do, so there is no reason to keep asking.
       if (!next) return stop();

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
@@ -9,7 +9,7 @@ import { useTheme } from '@/hooks/useColors';
 import { useScreenInsets } from '@/hooks/useScreenInsets';
 import { radii, spacing } from '@/constants/theme';
 import { ScreenHeader } from '@/components/HeroHeader';
-import { MapBackdrop } from '@/components/MapBackdrop';
+import { AddressPickerMap } from '@/components/map/AddressPickerMap';
 import {
   BottomBar,
   Button,
@@ -40,9 +40,63 @@ export default function AddressScreen() {
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  /** Set once the customer picks a city themselves, which stops the seed below. */
+  const [cityChosen, setCityChosen] = useState(false);
+  /** Guards the one-shot seed in the effect below. */
+  const seededRef = useRef(false);
 
-  const localities = CITIES.find((c) => c.city === city)?.localities ?? [];
+  /**
+   * Open on the address the customer is actually using, not on whichever city
+   * happens to be first in the catalog.
+   *
+   * This has to be an effect rather than a `useState` initialiser: addresses
+   * hydrate from storage after the first render, so at mount `activeAddress` is
+   * still null and a lazy initialiser would lock in the wrong city forever.
+   *
+   * It runs at most once. Seeding again later could swap the city out from under
+   * a locality the customer had already picked, leaving a Gurugram locality
+   * filed under Hyderabad.
+   */
+  useEffect(() => {
+    if (seededRef.current || !activeAddress) return;
+    const served = CITIES.find(
+      (entry) => entry.city.toLowerCase() === activeAddress.city.toLowerCase()
+    );
+    // Not a city we serve: leave the flag down so a later address can still
+    // seed, and let the map fall back to the raw coordinate below.
+    if (!served) return;
+    seededRef.current = true;
+    setCity(served.city);
+    setLocality(
+      served.localities.includes(activeAddress.locality) ? activeAddress.locality : null
+    );
+  }, [activeAddress]);
+
+  const cityEntry = CITIES.find((c) => c.city === city) ?? CITIES[0];
+  const localities = cityEntry.localities;
   const resolvedLabel = (label === 'other' ? customLabel.trim() : label) || 'home';
+
+  /**
+   * The active address's own coordinate, used to open the map on the customer's
+   * actual doorstep — including when their city is one the catalog doesn't list,
+   * where it is the only accurate view available.
+   *
+   * It stops applying the moment they pick a city themselves, so the map follows
+   * the chips rather than staying pinned to a different state.
+   */
+  const seededCoords =
+    !cityChosen && activeAddress?.lat != null && activeAddress?.lng != null
+      ? { lat: activeAddress.lat, lng: activeAddress.lng }
+      : null;
+
+  /**
+   * Where the pin sits. `coords` means "the customer has chosen a coordinate for
+   * *this* address" — from GPS or by placing the pin — and it is the only one
+   * that gets saved. The seed and the city centroid are opening views only: a
+   * neighbouring address's coordinate is not this address's, and a city centroid
+   * is nobody's doorstep.
+   */
+  const pin = coords ?? seededCoords ?? { lat: cityEntry.center[0], lng: cityEntry.center[1] };
 
   /**
    * Fills city/locality from the device GPS. Reverse geocoding can fail or return
@@ -80,7 +134,11 @@ export default function AddressScreen() {
         const served = CITIES.find(
           (c) => c.city.toLowerCase() === (place.city ?? '').toLowerCase()
         );
-        if (served) setCity(served.city);
+        if (served) {
+          setCity(served.city);
+          // A GPS fix outranks the saved-address seed — don't let it snap back.
+          setCityChosen(true);
+        }
         const street = [place.name, place.street].filter(Boolean).join(', ');
         if (street) setLine(street);
         setNotice(
@@ -132,7 +190,16 @@ export default function AddressScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: insets.bottom + 120 }}
       >
-        <MapBackdrop height={150} showExperts={false} caption={city} />
+        <AddressPickerMap
+          height={200}
+          value={pin}
+          onChange={(next) => {
+            setCoords(next);
+            setNotice('Pin placed. This is where your expert will be sent.');
+            setError('');
+          }}
+          caption={[locality, city].filter(Boolean).join(', ')}
+        />
 
         <View style={styles.body}>
           <Button
@@ -240,7 +307,13 @@ export default function AddressScreen() {
                 selected={city === entry.city}
                 onPress={() => {
                   setCity(entry.city);
+                  setCityChosen(true);
                   setLocality(null);
+                  // A coordinate captured in the previous city does not describe
+                  // this one. Dropping it moves the map to the new city and puts
+                  // the locate button honestly back to "not captured yet".
+                  setCoords(null);
+                  setNotice('');
                 }}
               />
             ))}

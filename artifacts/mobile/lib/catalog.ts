@@ -3,8 +3,8 @@
  *
  * Modelled on India's 10-minute house-help apps: small, concretely-named tasks
  * priced per slot (30/60/90 min) rather than broad trade categories, so a user
- * can stack several tasks into one visit. Trade work still exists, but lives in
- * the `repairs` group where instant dispatch does not apply.
+ * can stack several tasks into one visit. Trade work still exists in the
+ * `repairs` group, and — like every group — is instant-dispatchable.
  */
 
 import type { ComponentProps } from 'react';
@@ -39,7 +39,7 @@ export interface ServiceGroup {
   key: ServiceGroupKey;
   title: string;
   subtitle: string;
-  /** Instant (10-min arrival) is only offered for short, tool-light tasks. */
+  /** Whether Instant mode offers direct worker dispatch for this group. */
   supportsInstant: boolean;
 }
 
@@ -54,13 +54,13 @@ export const SERVICE_GROUPS: ServiceGroup[] = [
     key: 'deep_clean',
     title: 'Deep cleaning',
     subtitle: 'Machine-assisted jobs — book a slot that suits you',
-    supportsInstant: false,
+    supportsInstant: true,
   },
   {
     key: 'repairs',
     title: 'Repairs & maintenance',
     subtitle: 'Verified technicians, upfront visit charges',
-    supportsInstant: false,
+    supportsInstant: true,
   },
 ];
 
@@ -737,6 +737,7 @@ export interface Bundle {
   badge: string;
 }
 
+/** Bundles shown when the user is in **scheduled** mode. */
 export const BUNDLES: Bundle[] = [
   {
     key: 'daily_essentials',
@@ -761,6 +762,54 @@ export const BUNDLES: Bundle[] = [
     badge: 'SAVE ₹250',
   },
 ];
+
+/**
+ * Bundles shown when the user is in **instant** mode.
+ *
+ * Every service listed in `serviceKeys` must belong to the `house_help` group
+ * (the only group that supports instant dispatch) so the expert can fulfil the
+ * whole bundle in a single surprise-free visit.
+ */
+export const INSTANT_BUNDLES: Bundle[] = [
+  {
+    key: 'instant_morning_rush',
+    name: 'Morning rush bundle',
+    description: 'Expert arrives in 10 min — floors mopped, dishes done',
+    serviceKeys: ['sweeping_mopping', 'utensils'],
+    icon: 'weather-sunny',
+    minutes: 60,
+    price: 329,
+    strikePrice: 449,
+    badge: '10 MIN ARRIVAL',
+  },
+  {
+    key: 'instant_full_clean',
+    name: 'Quick full-home clean',
+    description: 'Sweep, dust and bathroom — one expert right now',
+    serviceKeys: ['sweeping_mopping', 'dusting', 'bathroom'],
+    icon: 'home-lightning-bolt-outline',
+    minutes: 90,
+    price: 499,
+    strikePrice: 699,
+    badge: 'SAVE ₹200',
+  },
+  {
+    key: 'instant_kitchen_hero',
+    name: 'Kitchen hero bundle',
+    description: 'Dishes, kitchen slab and floor done in one go',
+    serviceKeys: ['utensils', 'kitchen'],
+    icon: 'silverware-fork-knife',
+    minutes: 75,
+    price: 399,
+    strikePrice: 549,
+    badge: 'SAVE ₹150',
+  },
+];
+
+/** Returns the right bundle list for the current dispatch mode. */
+export function getBundles(mode: 'instant' | 'schedule'): Bundle[] {
+  return mode === 'instant' ? INSTANT_BUNDLES : BUNDLES;
+}
 
 // ─── Coupons ──────────────────────────────────────────────────────────────────
 
@@ -873,22 +922,42 @@ export const REVIEWS: Review[] = [
 ];
 
 /** Localities offered in the address picker, grouped by city. */
-export const CITIES: { city: string; localities: string[] }[] = [
+/**
+ * `center` is the city centre, `[lat, lng]`. It is only ever a starting view for
+ * the address picker's map before the customer places a pin or shares GPS — it
+ * is never saved as an address coordinate.
+ */
+export const CITIES: { city: string; localities: string[]; center: [number, number] }[] = [
   {
     city: 'Gurugram',
     localities: ['Sector 55', 'Sector 56', 'DLF Phase 4', 'Golf Course Road', 'Sohna Road'],
+    center: [28.4595, 77.0266],
   },
   {
     city: 'Bengaluru',
     localities: ['Indiranagar', 'Koramangala', 'Whitefield', 'HSR Layout', 'Bellandur'],
+    center: [12.9716, 77.5946],
   },
   {
     city: 'Mumbai',
     localities: ['Powai', 'Andheri West', 'Bandra West', 'Lower Parel', 'Thane West'],
+    center: [19.076, 72.8777],
   },
-  { city: 'Delhi', localities: ['Saket', 'Vasant Kunj', 'Dwarka', 'Rohini'] },
-  { city: 'Pune', localities: ['Kharadi', 'Baner', 'Viman Nagar', 'Hinjewadi'] },
-  { city: 'Hyderabad', localities: ['Gachibowli', 'Kondapur', 'Banjara Hills', 'Madhapur'] },
+  {
+    city: 'Delhi',
+    localities: ['Saket', 'Vasant Kunj', 'Dwarka', 'Rohini'],
+    center: [28.6139, 77.209],
+  },
+  {
+    city: 'Pune',
+    localities: ['Kharadi', 'Baner', 'Viman Nagar', 'Hinjewadi'],
+    center: [18.5204, 73.8567],
+  },
+  {
+    city: 'Hyderabad',
+    localities: ['Gachibowli', 'Kondapur', 'Banjara Hills', 'Madhapur'],
+    center: [17.385, 78.4867],
+  },
 ];
 
 // ─── Lookups ──────────────────────────────────────────────────────────────────

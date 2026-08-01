@@ -25,15 +25,23 @@ import { isLiveTrial, type Trial, type TrialSummary } from '@/lib/userTrials';
 const LIVE_STATUSES = ['searching', 'in_progress', 'pending_rating'];
 
 const STATUS_META: Record<string, { label: string; tone: BadgeTone; icon: MdiName }> = {
-  searching: { label: 'Finding expert', tone: 'warning', icon: 'radar' },
-  in_progress: { label: 'On the way', tone: 'primary', icon: 'navigation-variant-outline' },
-  pending_rating: { label: 'Work done', tone: 'success', icon: 'check-decagram-outline' },
-  payment_due: { label: 'Pay now', tone: 'warning', icon: 'cash-clock' },
+  // Instant requests key this off `request.stage`, the server-composed field
+  // that's authoritative for what to render — see rowFromRequest below.
+  searching: { label: 'Searching', tone: 'warning', icon: 'radar' },
+  en_route: { label: 'On the way', tone: 'primary', icon: 'navigation-variant-outline' },
+  arriving_soon: { label: 'Arriving soon', tone: 'primary', icon: 'map-marker-distance' },
+  arrived: { label: 'Arrived', tone: 'success', icon: 'map-marker-check-outline' },
+  working: { label: 'In progress', tone: 'primary', icon: 'progress-wrench' },
+  payment_due: { label: 'Payment due', tone: 'warning', icon: 'cash-clock' },
   completed: { label: 'Completed', tone: 'success', icon: 'check-circle-outline' },
   paid: { label: 'Paid', tone: 'success', icon: 'check-decagram' },
   cancelled: { label: 'Cancelled', tone: 'destructive', icon: 'close-circle-outline' },
   expired: { label: 'No match', tone: 'neutral', icon: 'timer-sand-empty' },
   retryable: { label: 'Try again', tone: 'warning', icon: 'refresh' },
+  // Legacy scheduled bookings only (`rowFromHistory` below) — that flow still
+  // keys off the old `status` enum, unrelated to `stage`.
+  in_progress: { label: 'On the way', tone: 'primary', icon: 'navigation-variant-outline' },
+  pending_rating: { label: 'Work done', tone: 'success', icon: 'check-decagram-outline' },
   // Trial-only. `assigned` is a trial's searching state, and `declined` means the
   // whole candidate queue passed — neither word appears in the normal flow.
   assigned: { label: 'Asking trainee', tone: 'warning', icon: 'radar' },
@@ -87,16 +95,25 @@ function formatDay(iso: string): string {
   return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
-/** An instant request → a row. */
+/**
+ * An instant request → a row.
+ *
+ * Keyed off `stage` (the server-composed field), not `status` — this is the
+ * same source the detail screen renders from, so the list card and the
+ * detail screen can never disagree about what the customer is being told.
+ * `paid` isn't a `stage` value — it's a further customer action after
+ * `stage: 'completed'` — so that one still reads `payment.status` directly.
+ */
 function rowFromRequest(request: UserRequest): BookingRow {
   const payable = request.payment.payable;
-  const badge = payable
-    ? 'payment_due'
-    : request.payment.status === 'paid'
+  const badge =
+    request.payment.status === 'paid'
       ? 'paid'
-      : request.status === 'expired' && request.canRetry
-        ? 'retryable'
-        : request.status;
+      : request.stage === 'work_done'
+        ? 'payment_due'
+        : request.stage === 'expired' && request.canRetry
+          ? 'retryable'
+          : request.stage;
 
   return {
     id: request.id,

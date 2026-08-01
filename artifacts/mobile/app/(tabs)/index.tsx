@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Pressable,
@@ -13,8 +13,8 @@ import * as Haptics from 'expo-haptics';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useColors';
 import { useScreenInsets } from '@/hooks/useScreenInsets';
-import { radii, spacing } from '@/constants/theme';
-import { useAppContext } from '@/context/AppContext';
+import { radii, spacing, type } from '@/constants/theme';
+import { useAppContext, type BookingMode } from '@/context/AppContext';
 import { HeroHeader, HeroSearchBar } from '@/components/HeroHeader';
 import { CartBar } from '@/components/CartBar';
 import { InstantBookingSheet } from '@/components/InstantBookingSheet';
@@ -29,7 +29,7 @@ import {
   Text,
 } from '@/components/ui';
 import {
-  BUNDLES,
+  getBundles,
   formatMinutes,
   formatPrice,
   getGroup,
@@ -63,6 +63,38 @@ export default function HomeScreen() {
     addBundleToCart,
     quantityForService,
   } = useAppContext();
+
+  // Animated value to cross-fade the bundle rail on mode switch.
+  const bundleFadeAnim = useRef(new Animated.Value(1)).current;
+  /**
+   * The mode the bundle rail is currently *showing*, which trails `mode` by the
+   * length of the fade-out. Every piece of card copy reads from this rather than
+   * from `mode` — reading `mode` directly flipped the button label and the "10
+   * min" line a fade earlier than the bundle names, which looked like the text
+   * was lagging behind the toggle.
+   */
+  const [railMode, setRailMode] = useState<BookingMode>(mode);
+  const displayedBundles: Bundle[] = useMemo(() => getBundles(railMode), [railMode]);
+
+  // Whenever mode changes, fade out → swap bundles → fade in.
+  useEffect(() => {
+    if (railMode === mode) return;
+    Animated.timing(bundleFadeAnim, {
+      toValue: 0,
+      duration: 130,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      // A second toggle mid-fade starts its own animation and cancels this one;
+      // that run owns the fade-in, so bail out rather than fight it.
+      if (!finished) return;
+      setRailMode(mode);
+      Animated.timing(bundleFadeAnim, {
+        toValue: 1,
+        duration: 170,
+        useNativeDriver: true,
+      }).start();
+    });
+  }, [mode, railMode]);
 
   /**
    * The service kept behind the instant sheet. Held after the sheet closes so
@@ -289,27 +321,32 @@ export default function HomeScreen() {
           {/* ── Bundles ─────────────────────────────────────────────────── */}
           <SectionHeader
             title="Exclusive bundles"
-            subtitle="Stack tasks into one visit and save"
+            subtitle={
+              mode === 'instant'
+                ? 'Expert at your door in 10 min — pick a bundle'
+                : 'Stack tasks into one visit and save'
+            }
             style={styles.sectionTop}
           />
-          <ScrollView
+          <Animated.ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.rail}
-            style={styles.railBleed}
+            contentContainerStyle={[styles.rail, styles.bundleRail]}
+            style={[styles.railBleed, { opacity: bundleFadeAnim }]}
           >
-            {BUNDLES.map((bundle) => (
+            {displayedBundles.map((bundle) => (
               <BundleCard
                 key={bundle.key}
                 bundle={bundle}
                 width={width - spacing.lg * 2 - 36}
+                instant={railMode === 'instant'}
                 onAdd={() => {
                   Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   addBundleToCart(bundle.key);
                 }}
               />
             ))}
-          </ScrollView>
+          </Animated.ScrollView>
 
           {/* ── Most booked ─────────────────────────────────────────────── */}
           <SectionHeader
@@ -602,10 +639,12 @@ function ModeToggle({
 function BundleCard({
   bundle,
   width,
+  instant,
   onAdd,
 }: {
   bundle: Bundle;
   width: number;
+  instant: boolean;
   onAdd: () => void;
 }) {
   const { colors } = useTheme();
@@ -614,10 +653,14 @@ function BundleCard({
       <View style={styles.bundleTop}>
         <View style={styles.flex}>
           <Badge label={bundle.badge} tone="onHero" />
-          <Text variant="h3" tone="onHero" style={styles.bundleTitle}>
+          <Text variant="h3" tone="onHero" style={styles.bundleTitle} numberOfLines={2}>
             {bundle.name}
           </Text>
-          <Text variant="caption" style={{ color: colors.onHeroMuted }}>
+          <Text
+            variant="caption"
+            style={[styles.bundleDescription, { color: colors.onHeroMuted }]}
+            numberOfLines={2}
+          >
             {bundle.description}
           </Text>
         </View>
@@ -632,7 +675,7 @@ function BundleCard({
       </View>
 
       <View style={styles.bundleFooter}>
-        <View>
+        <View style={styles.flex}>
           <View style={styles.bundlePriceRow}>
             <Text variant="h3" tone="onHero">
               {formatPrice(bundle.price)}
@@ -644,11 +687,19 @@ function BundleCard({
               {formatPrice(bundle.strikePrice)}
             </Text>
           </View>
-          <Text variant="caption" style={{ color: colors.onHeroMuted }}>
-            {formatMinutes(bundle.minutes)} · one expert
+          {/* One line always: the instant copy is the longer of the two and would
+              otherwise wrap on narrow screens, making that rail a row taller. */}
+          <Text variant="caption" style={{ color: colors.onHeroMuted }} numberOfLines={1}>
+            {formatMinutes(bundle.minutes)}{instant ? ' · arrives in 10 min' : ' · one expert'}
           </Text>
         </View>
-        <Button label="Add bundle" variant="onHero" size="sm" icon="plus" onPress={onAdd} />
+        <Button
+          label={instant ? 'Book now' : 'Add bundle'}
+          variant="onHero"
+          size="sm"
+          icon={instant ? 'lightning-bolt' : 'plus'}
+          onPress={onAdd}
+        />
       </View>
     </Card>
   );
@@ -705,6 +756,8 @@ const styles = StyleSheet.create({
   // Rails bleed to the screen edge so the next card peeks in from the right.
   railBleed: { marginHorizontal: -spacing.lg },
   rail: { paddingHorizontal: spacing.lg, gap: spacing.md, paddingBottom: 4 },
+  // Every bundle card takes the height of the tallest one in the rail.
+  bundleRail: { alignItems: 'stretch' },
   grid: { flexDirection: 'column', gap: 10 },
   tileRow: { flexDirection: 'row', justifyContent: 'space-between' },
   twoColGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
@@ -715,8 +768,20 @@ const styles = StyleSheet.create({
   statDivider: { width: StyleSheet.hairlineWidth, height: 38 },
   reviewCard: { width: 268 },
   quote: { marginTop: spacing.sm, marginBottom: spacing.md },
-  bundleTop: { flexDirection: 'row', gap: spacing.md },
-  bundleTitle: { marginTop: spacing.sm, marginBottom: 3 },
+  // `flex: 1` lets the top block absorb the slack when the rail stretches a card
+  // to match its tallest sibling, so the footer stays pinned to the bottom edge.
+  bundleTop: { flex: 1, flexDirection: 'row', gap: spacing.md },
+  // Titles and descriptions run to one line for some bundles and two for others,
+  // which made the instant rail and the scheduled rail different heights. Both
+  // reserve two lines' worth of space so every card measures the same whichever
+  // set is showing. `minHeight` rather than `height`: at large system font sizes
+  // two clamped lines are taller than this and must not be cut off.
+  bundleTitle: {
+    marginTop: spacing.sm,
+    marginBottom: 3,
+    minHeight: type.h3.lineHeight * 2,
+  },
+  bundleDescription: { minHeight: type.caption.lineHeight * 2 },
   bundleArt: {
     width: 62,
     height: 62,
