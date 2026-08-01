@@ -16,6 +16,25 @@ export type IonName = ComponentProps<typeof Ionicons>['name'];
 /** Which shelf a service sits on, and how it can be dispatched. */
 export type ServiceGroupKey = 'house_help' | 'deep_clean' | 'repairs';
 
+/**
+ * The categories the booking backend accepts.
+ *
+ * `POST /api/user/service-requests` validates `category` against its own catalog
+ * and prices the job from its own rate card, so these eight keys — not this
+ * file's service keys — are what an instant booking is actually placed under.
+ * The live names, prices and subcategories come from `GET /api/services`; this
+ * type only pins down the mapping.
+ */
+export type RemoteCategoryKey =
+  | 'cleaning'
+  | 'electrical'
+  | 'cooking'
+  | 'plumbing'
+  | 'carpentry'
+  | 'ac_repair'
+  | 'painting'
+  | 'pest_control';
+
 export interface ServiceGroup {
   key: ServiceGroupKey;
   title: string;
@@ -69,6 +88,15 @@ export interface Service {
   price: number;
   durations: DurationOption[];
   includes: string[];
+  /**
+   * The concrete tasks inside a service — "Kitchen floor", "WC & seat".
+   *
+   * Instant dispatch sends one expert straight to the door with no cart review
+   * in between, so the brief has to be pinned down before they leave: these are
+   * the chips the instant sheet asks the customer to tick. Services that do not
+   * define them fall back to `includes` (see `getSubcategories`).
+   */
+  subcategories?: string[];
   /** Corner ribbon on the grid tile, e.g. a live offer. */
   offer?: string;
   popular?: boolean;
@@ -95,6 +123,14 @@ const HOUSE_HELP: Service[] = [
       { key: '60', label: '1 hour', minutes: 60, price: 269 },
     ],
     includes: ['All rooms swept', 'Corners and skirting', 'Dust bagged & disposed'],
+    subcategories: [
+      'Living room',
+      'Bedrooms',
+      'Kitchen floor',
+      'Balcony',
+      'Stairs & lobby',
+      'Under furniture',
+    ],
     rating: 4.8,
     bookings: '3.4L+ bookings',
   },
@@ -118,6 +154,14 @@ const HOUSE_HELP: Service[] = [
       'Floor cleaner included',
       'Balcony floors on request',
     ],
+    subcategories: [
+      'Whole house',
+      'Living room',
+      'Bedrooms',
+      'Kitchen floor',
+      'Bathroom floor',
+      'Balcony',
+    ],
     popular: true,
     rating: 4.9,
     bookings: '8.1L+ bookings',
@@ -137,6 +181,14 @@ const HOUSE_HELP: Service[] = [
       { key: '60', label: '1 hour', minutes: 60, price: 319 },
     ],
     includes: ['Microfibre cloth & polish', 'Shelves and TV units', 'Switchboards & frames'],
+    subcategories: [
+      'Shelves & tables',
+      'TV unit',
+      'Switchboards',
+      'Door & window frames',
+      'Window sills',
+      'Showpieces & frames',
+    ],
     rating: 4.8,
     bookings: '2.6L+ bookings',
   },
@@ -159,6 +211,14 @@ const HOUSE_HELP: Service[] = [
       'Disinfectant included',
       'Mirror polish + drain clearing',
     ],
+    subcategories: [
+      'WC & seat',
+      'Wash basin',
+      'Tiles & walls',
+      'Floor scrub',
+      'Mirror & fittings',
+      'Drain clearing',
+    ],
     offer: '₹50 OFF',
     popular: true,
     rating: 4.9,
@@ -179,6 +239,14 @@ const HOUSE_HELP: Service[] = [
       { key: '60', label: '1 hour', minutes: 60, price: 299 },
     ],
     includes: ['Wash, dry & stack', 'Dishwash liquid included', 'Sink & board wiped'],
+    subcategories: [
+      'Sink pile',
+      'Cookware & kadhai',
+      'Glassware',
+      'Lunch boxes',
+      'Stack & put away',
+      'Sink & board wipe',
+    ],
     popular: true,
     rating: 4.8,
     bookings: '6.7L+ bookings',
@@ -198,6 +266,13 @@ const HOUSE_HELP: Service[] = [
       { key: '60', label: '1 hour', minutes: 60, price: 349 },
     ],
     includes: ['Sort & load machine', 'Hang to dry', 'Fold and stack dry clothes'],
+    subcategories: [
+      'Machine wash load',
+      'Hand wash delicates',
+      'Hang out to dry',
+      'Fold & stack',
+      'Bedsheets & towels',
+    ],
     rating: 4.7,
     bookings: '2.1L+ bookings',
   },
@@ -216,6 +291,14 @@ const HOUSE_HELP: Service[] = [
       { key: '60', label: '1 hour', minutes: 60, price: 329 },
     ],
     includes: ['Up to 15 garments per 30 min', 'Hung on hangers', 'Delicates on request'],
+    subcategories: [
+      'Shirts & tops',
+      'Trousers & jeans',
+      'Kurtas & ethnic',
+      'Sarees & dupattas',
+      'School uniforms',
+      'Bedsheets',
+    ],
     rating: 4.7,
     bookings: '96K+ bookings',
   },
@@ -234,6 +317,15 @@ const HOUSE_HELP: Service[] = [
       { key: '90', label: '90 min', minutes: 90, price: 499 },
     ],
     includes: ['Slab & stove degreased', 'Backsplash tiles', 'Cabinet fronts wiped'],
+    subcategories: [
+      'Platform & slab',
+      'Stove & burners',
+      'Backsplash tiles',
+      'Sink & taps',
+      'Cabinet fronts',
+      'Chimney exterior',
+      'Floor mop',
+    ],
     rating: 4.8,
     bookings: '3.9L+ bookings',
   },
@@ -252,6 +344,13 @@ const HOUSE_HELP: Service[] = [
       { key: '60', label: '1 hour', minutes: 60, price: 419 },
     ],
     includes: ['Glass cleaner & squeegee', 'Grills and mesh', 'Sills wiped dry'],
+    subcategories: [
+      'Glass panes',
+      'Grills',
+      'Mosquito mesh',
+      'Sills & tracks',
+      'Balcony railing',
+    ],
     offer: '₹50 OFF',
     rating: 4.7,
     bookings: '74K+ bookings',
@@ -271,6 +370,7 @@ const HOUSE_HELP: Service[] = [
       { key: '60', label: '1 hour', minutes: 60, price: 369 },
     ],
     includes: ['Steps swept & mopped', 'Railings wiped', 'Landings included'],
+    subcategories: ['Steps sweep', 'Steps mop', 'Railings', 'Landings', 'Lobby area'],
     rating: 4.6,
     bookings: '41K+ bookings',
   },
@@ -286,6 +386,14 @@ const HOUSE_HELP: Service[] = [
     price: 249,
     durations: [{ key: '45', label: '45 min', minutes: 45, price: 249 }],
     includes: ['Shelves & trays washed', 'Interior deodorised', 'Contents restacked'],
+    subcategories: [
+      'Shelves & trays',
+      'Freezer',
+      'Door pockets',
+      'Vegetable drawer',
+      'Deodorise',
+      'Restack contents',
+    ],
     rating: 4.8,
     bookings: '38K+ bookings',
   },
@@ -304,6 +412,14 @@ const HOUSE_HELP: Service[] = [
       { key: '90', label: '90 min', minutes: 90, price: 429 },
     ],
     includes: ['Fold & re-stack', 'Category-wise sorting', 'Discard pile set aside'],
+    subcategories: [
+      'Wardrobe',
+      "Kids' shelves",
+      'Kitchen cabinets',
+      'Storage boxes',
+      'Shoe rack',
+      'Study table',
+    ],
     rating: 4.8,
     bookings: '29K+ bookings',
   },
@@ -322,6 +438,14 @@ const HOUSE_HELP: Service[] = [
       { key: '90', label: '90 min', minutes: 90, price: 499 },
     ],
     includes: ['Veg prep & chopping', 'Roti + 2 dishes', 'Cooking area cleaned'],
+    subcategories: [
+      'Veg prep & chopping',
+      'Roti / paratha',
+      'Dal & sabzi',
+      'Rice & curry',
+      'Breakfast',
+      'Clean-up after',
+    ],
     rating: 4.7,
     bookings: '1.3L+ bookings',
   },
@@ -340,6 +464,14 @@ const HOUSE_HELP: Service[] = [
       { key: '60', label: '1 hour', minutes: 60, price: 399 },
     ],
     includes: ['Supervised walk', 'Food & water refresh', 'Litter tray cleaned'],
+    subcategories: [
+      'Walk',
+      'Feed & water',
+      'Litter tray',
+      'Brush & wipe',
+      'Crate / bedding',
+      'Play time',
+    ],
     rating: 4.9,
     bookings: '22K+ bookings',
   },
@@ -783,6 +915,76 @@ export function getGroup(key: ServiceGroupKey): ServiceGroup {
 /** Popular tasks, used for the home "Most booked" rail. */
 export function getPopularServices(): Service[] {
   return SERVICES.filter((s) => s.popular);
+}
+
+/**
+ * The tickable tasks shown in the instant booking sheet.
+ *
+ * These are *not* the backend's subcategories — that list is fetched live and
+ * validated server-side. These are the concrete household tasks behind this
+ * app's finer-grained catalog, and they go into the job description, which the
+ * worker reads verbatim. Without them a booking for "Ironing" would reach the
+ * worker as nothing but the category it bills under.
+ *
+ * Falls back to `includes` so the sheet is never empty for a service with no
+ * curated list — those lines already describe the work, they just read as a
+ * promise rather than a choice.
+ */
+export function getSubcategories(service: Service): string[] {
+  return service.subcategories ?? service.includes;
+}
+
+/**
+ * Local service → the backend category it is booked and priced under.
+ *
+ * This app's catalog is deliberately finer-grained than the backend's rate card:
+ * it sells "Sweeping & mopping" and "Fridge cleaning" where the server bills a
+ * flat `cleaning`. Instant dispatch has to speak the server's language, so every
+ * instant-bookable service needs an entry here — a service missing from this
+ * table cannot be dispatched and falls back to the scheduled flow.
+ *
+ * Kept as one table rather than a field on each service so the whole mapping can
+ * be read, and audited against `GET /api/services`, in one place.
+ */
+const REMOTE_CATEGORY: Record<string, RemoteCategoryKey> = {
+  // Housekeeping and machine-assisted cleaning all bill at the `cleaning` rate.
+  sweeping: 'cleaning',
+  sweeping_mopping: 'cleaning',
+  dusting: 'cleaning',
+  bathroom: 'cleaning',
+  utensils: 'cleaning',
+  laundry: 'cleaning',
+  ironing: 'cleaning',
+  kitchen: 'cleaning',
+  window: 'cleaning',
+  staircase: 'cleaning',
+  fridge: 'cleaning',
+  organising: 'cleaning',
+  deep_home: 'cleaning',
+  sofa_carpet: 'cleaning',
+  fan_cleaning: 'cleaning',
+  bathroom_deep: 'cleaning',
+  mattress: 'cleaning',
+  water_tank: 'cleaning',
+
+  cooking: 'cooking',
+
+  electrical: 'electrical',
+  plumbing: 'plumbing',
+  carpentry: 'carpentry',
+  ac_repair: 'ac_repair',
+  painting: 'painting',
+  pest_control: 'pest_control',
+  // Odd jobs are dispatched to a carpenter — they carry the tool kit.
+  handyman: 'carpentry',
+
+  // `pet_care` is deliberately absent: the backend has no category for it, and
+  // billing a dog walk as "Cleaning" would quote the wrong price for the wrong
+  // job. It stays on the scheduled flow until the rate card grows a category.
+};
+
+export function getRemoteCategory(service: Service): RemoteCategoryKey | undefined {
+  return REMOTE_CATEGORY[service.key];
 }
 
 /** `formatPrice(1499)` → `"₹1,499"` (Indian grouping). */

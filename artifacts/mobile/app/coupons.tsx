@@ -1,6 +1,7 @@
-import React from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import React, { useCallback } from 'react';
+import { Pressable, ScrollView, Share, StyleSheet, View } from 'react-native';
 import { router } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useColors';
@@ -9,12 +10,34 @@ import { radii, spacing } from '@/constants/theme';
 import { ScreenHeader } from '@/components/HeroHeader';
 import { Badge, Button, Card, Text } from '@/components/ui';
 import { useAppContext } from '@/context/AppContext';
-import { COUPONS, formatPrice } from '@/lib/catalog';
+import { formatPrice } from '@/lib/catalog';
 
 export default function CouponsScreen() {
   const { colors } = useTheme();
   const insets = useScreenInsets();
-  const { subtotal, couponCode, applyCoupon, credits } = useAppContext();
+  const { subtotal, couponCode, applyCoupon, credits, profile, serverCoupons, isLoadingCoupons, refreshCoupons } = useAppContext();
+
+  // Refresh on every screen visit so WELCOME150 disappears after first payment.
+  useFocusEffect(
+    useCallback(() => {
+      refreshCoupons();
+    }, [refreshCoupons])
+  );
+
+  const referralCode = profile?.referralCode ?? null;
+
+  async function handleCopyCode() {
+    if (!referralCode) return;
+    Haptics.selectionAsync();
+    try {
+      await Share.share({
+        message: `Use my Kaaryo referral code ${referralCode} to get ₹150 off your first booking! 🎉`,
+        title: 'Share Kaaryo referral code',
+      });
+    } catch {
+      // User dismissed share sheet — no-op.
+    }
+  }
 
   return (
     <View style={[styles.fill, { backgroundColor: colors.background }]}>
@@ -59,97 +82,117 @@ export default function CouponsScreen() {
           Coupons for you
         </Text>
 
-        <View style={styles.stack}>
-          {COUPONS.map((coupon) => {
-            const eligible = subtotal >= coupon.minSubtotal;
-            const applied = couponCode === coupon.code;
-            const shortfall = coupon.minSubtotal - subtotal;
+        {isLoadingCoupons && serverCoupons.length === 0 ? (
+          <Card padding="lg">
+            <Text variant="caption" tone="muted" center>
+              Loading your coupons…
+            </Text>
+          </Card>
+        ) : serverCoupons.length === 0 ? (
+          <Card padding="lg">
+            <Text variant="caption" tone="muted" center>
+              No coupons available right now.
+            </Text>
+          </Card>
+        ) : (
+          <View style={styles.stack}>
+            {serverCoupons.map((coupon) => {
+              const eligible = subtotal >= coupon.minSubtotal;
+              const applied = couponCode === coupon.code;
+              const shortfall = coupon.minSubtotal - subtotal;
 
-            return (
-              <Card
-                key={coupon.code}
-                padding="lg"
-                style={[
-                  styles.coupon,
-                  applied && { borderColor: colors.primary, borderWidth: 1.5 },
-                ]}
-              >
-                <View style={styles.couponTop}>
-                  <View
-                    style={[styles.couponCode, { borderColor: colors.border }]}
-                  >
-                    <MaterialCommunityIcons
-                      name="ticket-percent-outline"
-                      size={16}
-                      color={colors.primary}
-                    />
-                    <Text variant="captionSemi" tone="primary">
-                      {coupon.code}
-                    </Text>
+              return (
+                <Card
+                  key={coupon.code}
+                  padding="lg"
+                  style={[
+                    styles.coupon,
+                    applied && { borderColor: colors.primary, borderWidth: 1.5 },
+                  ]}
+                >
+                  <View style={styles.couponTop}>
+                    <View
+                      style={[styles.couponCode, { borderColor: colors.border }]}
+                    >
+                      <MaterialCommunityIcons
+                        name="ticket-percent-outline"
+                        size={16}
+                        color={colors.primary}
+                      />
+                      <Text variant="captionSemi" tone="primary">
+                        {coupon.code}
+                      </Text>
+                    </View>
+                    {applied ? <Badge label="Applied" tone="success" icon="check" /> : null}
                   </View>
-                  {applied ? <Badge label="Applied" tone="success" icon="check" /> : null}
-                </View>
 
-                <Text variant="h3" style={styles.couponTitle}>
-                  {coupon.title}
-                </Text>
-                <Text variant="caption" tone="muted">
-                  {coupon.detail}
-                </Text>
+                  <Text variant="h3" style={styles.couponTitle}>
+                    {coupon.title}
+                  </Text>
+                  <Text variant="caption" tone="muted">
+                    {coupon.detail}
+                  </Text>
 
-                <View style={styles.couponFooter}>
-                  {eligible ? (
-                    <Text variant="caption" tone="success">
-                      Saves {formatPrice(coupon.discount)} on this cart
-                    </Text>
-                  ) : (
-                    <Text variant="caption" tone="muted">
-                      {subtotal === 0
-                        ? `Minimum cart ${formatPrice(coupon.minSubtotal)}`
-                        : `Add ${formatPrice(shortfall)} more to unlock`}
-                    </Text>
-                  )}
-                  <Button
-                    label={applied ? 'Remove' : 'Apply'}
-                    variant={applied ? 'outline' : 'secondary'}
-                    size="sm"
-                    disabled={!eligible && !applied}
-                    onPress={() => {
-                      Haptics.selectionAsync();
-                      applyCoupon(applied ? null : coupon.code);
-                    }}
-                  />
-                </View>
-              </Card>
-            );
-          })}
-        </View>
+                  <View style={styles.couponFooter}>
+                    {eligible ? (
+                      <Text variant="caption" tone="success">
+                        Saves {formatPrice(coupon.discount)} on this cart
+                      </Text>
+                    ) : (
+                      <Text variant="caption" tone="muted">
+                        {subtotal === 0
+                          ? `Minimum cart ${formatPrice(coupon.minSubtotal)}`
+                          : `Add ${formatPrice(shortfall)} more to unlock`}
+                      </Text>
+                    )}
+                    <Button
+                      label={applied ? 'Remove' : 'Apply'}
+                      variant={applied ? 'outline' : 'secondary'}
+                      size="sm"
+                      disabled={!eligible && !applied}
+                      onPress={() => {
+                        Haptics.selectionAsync();
+                        applyCoupon(applied ? null : coupon.code);
+                      }}
+                    />
+                  </View>
+                </Card>
+              );
+            })}
+          </View>
+        )}
 
         {/* ── Referral ───────────────────────────────────────────────────── */}
-        <Text variant="h3" style={styles.sectionTitle}>
-          Invite and earn
-        </Text>
-        <Card tone="tint" padding="lg" bordered={false}>
-          <Text variant="bodySemi" style={{ color: colors.secondaryForeground }}>
-            Give ₹150, get ₹150
-          </Text>
-          <Text variant="caption" style={{ color: colors.secondaryForeground }}>
-            Your friend gets ₹150 off their first booking. You get ₹150 once they complete it.
-          </Text>
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => Haptics.selectionAsync()}
-            style={({ pressed }) => [
-              styles.referral,
-              { borderColor: colors.primary, opacity: pressed ? 0.7 : 1 },
-            ]}
-          >
-            <Text variant="bodySemi" tone="primary" style={styles.flex}>
-              KAARYO-FRIEND
+        {/* Hide the block entirely when referralCode is null (mint-collision edge case). */}
+        {referralCode !== null ? (
+          <>
+            <Text variant="h3" style={styles.sectionTitle}>
+              Invite and earn
             </Text>
-            <MaterialCommunityIcons name="content-copy" size={16} color={colors.primary} />
-          </Pressable>
-        </Card>
+            <Card tone="tint" padding="lg" bordered={false}>
+              <Text variant="bodySemi" style={{ color: colors.secondaryForeground }}>
+                Give ₹150, get ₹150
+              </Text>
+              <Text variant="caption" style={{ color: colors.secondaryForeground }}>
+                Your friend gets ₹150 off their first booking. You get ₹150 once they complete it.
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Copy referral code"
+                onPress={handleCopyCode}
+                style={({ pressed }) => [
+                  styles.referral,
+                  { borderColor: colors.primary, opacity: pressed ? 0.7 : 1 },
+                ]}
+              >
+                <Text variant="bodySemi" tone="primary" style={styles.flex}>
+                  {referralCode}
+                </Text>
+                <MaterialCommunityIcons name="share-variant-outline" size={16} color={colors.primary} />
+              </Pressable>
+            </Card>
+          </>
+        ) : null}
       </ScrollView>
     </View>
   );

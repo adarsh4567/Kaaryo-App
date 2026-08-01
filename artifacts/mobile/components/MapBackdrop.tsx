@@ -1,5 +1,6 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { Animated, Easing, Platform, StyleSheet, View, type DimensionValue } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useColors';
 import { radii } from '@/constants/theme';
@@ -48,12 +49,37 @@ const PINS: [number, number][] = [
   [30, 70],
 ];
 
+/** One full turn of the radar beam, in ms. */
+const SWEEP_PERIOD = 2600;
+
+/** How long a pin stays lit after the beam crosses it. */
+const BLIP_RISE = 200;
+
+/**
+ * Where in the sweep the beam crosses each pin, as a 0–1 fraction of a turn.
+ *
+ * Pre-computed so a blip fires as the beam actually reaches that pin rather than
+ * on an arbitrary stagger — that sync is the whole reason a radar reads as a
+ * search rather than as decoration. The two axes are percentages of different
+ * lengths, so the angle is approximate; at this scale the eye cannot tell.
+ */
+const PIN_PHASE: number[] = PINS.map(([left, top]) => {
+  const degrees = (Math.atan2(top - 46, left - 50) * 180) / Math.PI;
+  // The beam's leading edge starts due north (−90°), so shift into that frame.
+  return ((((degrees + 90) % 360) + 360) % 360) / 360;
+});
+
 export function MapBackdrop({
   height,
   /** Draws the "experts near you" ellipse and pin cluster. */
   showExperts = true,
   /** Pulsing rings under the centre pin — used while dispatching. */
   pulsing = false,
+  /**
+   * Sweeping radar beam over the whole canvas, with the expert pins blipping as
+   * it passes them. Used while the app is hunting for a worker.
+   */
+  radar = false,
   /** Small caption chip in the bottom-left corner. */
   caption,
   children,
@@ -61,6 +87,7 @@ export function MapBackdrop({
   height: number;
   showExperts?: boolean;
   pulsing?: boolean;
+  radar?: boolean;
   caption?: string;
   children?: React.ReactNode;
 }) {
@@ -108,6 +135,65 @@ export function MapBackdrop({
     }),
   }));
 
+  // ── Radar ──────────────────────────────────────────────────────────────────
+
+  const sweepValue = useRef(new Animated.Value(0)).current;
+  const blipValues = useRef(PINS.map(() => new Animated.Value(0))).current;
+
+  useEffect(() => {
+    if (!radar) {
+      sweepValue.setValue(0);
+      blipValues.forEach((v) => v.setValue(0));
+      return;
+    }
+    const nativeDriver = Platform.OS !== 'web';
+
+    const beam = Animated.loop(
+      Animated.timing(sweepValue, {
+        toValue: 1,
+        duration: SWEEP_PERIOD,
+        easing: Easing.linear,
+        useNativeDriver: nativeDriver,
+      })
+    );
+
+    // Each pin loops on the beam's own period with its phase held in a leading
+    // delay, so the two never drift however long the search runs.
+    const blips = blipValues.map((value, i) => {
+      const lead = Math.min(PIN_PHASE[i] * SWEEP_PERIOD, SWEEP_PERIOD - BLIP_RISE - 1);
+      return Animated.loop(
+        Animated.sequence([
+          Animated.delay(lead),
+          Animated.timing(value, {
+            toValue: 1,
+            duration: BLIP_RISE,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: nativeDriver,
+          }),
+          Animated.timing(value, {
+            toValue: 0,
+            duration: SWEEP_PERIOD - BLIP_RISE - lead,
+            easing: Easing.in(Easing.quad),
+            useNativeDriver: nativeDriver,
+          }),
+        ])
+      );
+    });
+
+    const animation = Animated.parallel([beam, ...blips]);
+    animation.start();
+    return () => animation.stop();
+  }, [radar, sweepValue, blipValues]);
+
+  const beamRotate = sweepValue.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
+
+  // Overshoots the canvas so the beam sweeps corner to corner rather than
+  // spinning inside a visible circle; `overflow: hidden` crops the rest.
+  const discSize = useMemo(() => height * 1.9, [height]);
+
   return (
     <View style={[styles.canvas, { height, backgroundColor: colors.mapCanvas }]}>
       {BLOCKS.map(([left, top, w, h], i) => (
@@ -140,6 +226,56 @@ export function MapBackdrop({
         />
       ))}
 
+      {/* Radar sweep, under the pins so they stay legible through the beam. */}
+      {radar ? (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.radarWrap,
+            {
+              width: discSize,
+              height: discSize,
+              marginLeft: -discSize / 2,
+              marginTop: -discSize / 2,
+            },
+          ]}
+        >
+          {RADAR_RINGS.map((fraction) => (
+            <View
+              key={fraction}
+              style={[
+                styles.radarRing,
+                {
+                  width: discSize * fraction,
+                  height: discSize * fraction,
+                  borderRadius: (discSize * fraction) / 2,
+                  borderColor: colors.primary,
+                },
+              ]}
+            />
+          ))}
+          <Animated.View
+            style={[StyleSheet.absoluteFill, { transform: [{ rotate: beamRotate }] }]}
+          >
+            <LinearGradient
+              colors={[
+                withAlpha(colors.primary, 0.42),
+                withAlpha(colors.primary, 0.1),
+                withAlpha(colors.primary, 0),
+              ]}
+              locations={[0, 0.55, 1]}
+              start={{ x: 1, y: 0 }}
+              end={{ x: 0, y: 1 }}
+              style={{
+                width: discSize / 2,
+                height: discSize / 2,
+                borderTopLeftRadius: discSize / 2,
+              }}
+            />
+          </Animated.View>
+        </View>
+      ) : null}
+
       {showExperts ? (
         <>
           {/* The "experts near you" catchment ring. */}
@@ -150,12 +286,32 @@ export function MapBackdrop({
             ]}
           />
           {PINS.map(([left, top], i) => (
-            <View
+            <Animated.View
               key={`p${i}`}
-              style={{ position: 'absolute', left: pct(left), top: pct(top) }}
+              style={{
+                position: 'absolute',
+                left: pct(left),
+                top: pct(top),
+                opacity: radar
+                  ? blipValues[i].interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0.25, 1],
+                    })
+                  : 1,
+                transform: radar
+                  ? [
+                      {
+                        scale: blipValues[i].interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0.86, 1.22],
+                        }),
+                      },
+                    ]
+                  : [],
+              }}
             >
               <MaterialCommunityIcons name="map-marker" size={20} color={colors.primary} />
-            </View>
+            </Animated.View>
           ))}
         </>
       ) : null}
@@ -205,8 +361,33 @@ function pct(value: number): DimensionValue {
   return `${value}%`;
 }
 
+/** Radii of the radar's range rings, as a fraction of the disc. */
+const RADAR_RINGS = [0.4, 0.7, 1];
+
+/**
+ * `#00674F` → `rgba(0, 103, 79, 0.42)`.
+ *
+ * The gradient needs the brand green at several opacities, and the palette only
+ * ships opaque hex. Anything that is not `#rrggbb` is passed through untouched.
+ */
+function withAlpha(hex: string, alpha: number): string {
+  const match = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(hex);
+  if (!match) return hex;
+  const [r, g, b] = match.slice(1).map((pair) => parseInt(pair, 16));
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 const styles = StyleSheet.create({
   canvas: { width: '100%', overflow: 'hidden' },
+  radarWrap: {
+    position: 'absolute',
+    // Anchored on the home pin, which sits at 50% / 46% of the canvas.
+    left: '50%',
+    top: '46%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radarRing: { position: 'absolute', borderWidth: 1, opacity: 0.16 },
   catchment: {
     position: 'absolute',
     left: '10%',

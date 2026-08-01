@@ -39,12 +39,29 @@ function RootLayoutNav() {
       }}
     >
       <Stack.Screen name="(tabs)" />
-      <Stack.Screen name="onboarding" options={{ animation: 'fade' }} />
+      <Stack.Screen name="login" options={{ animation: 'fade' }} />
+      <Stack.Screen name="otp" />
+      {/* Profile setup cannot be skipped, so the back gesture is disabled — the
+          way out is "Use a different number", which signs out. */}
+      <Stack.Screen name="name" options={{ animation: 'fade', gestureEnabled: false }} />
       <Stack.Screen name="service" />
       <Stack.Screen name="cart" options={{ animation: 'slide_from_bottom' }} />
+      {/* Instant dispatch is in flight the moment it opens, so the only way out
+          is the cancel button — a back swipe would strand a live booking. */}
+      <Stack.Screen
+        name="dispatch"
+        options={{ animation: 'slide_from_bottom', gestureEnabled: false }}
+      />
       <Stack.Screen name="address" options={{ presentation: 'modal' }} />
       <Stack.Screen name="coupons" options={{ presentation: 'modal' }} />
+      {/* Scheduled bookings, placed against the legacy endpoint. */}
       <Stack.Screen name="tracking" options={{ gestureEnabled: false }} />
+      {/* Instant bookings — tracking and payment for `/api/user/service-requests`. */}
+      <Stack.Screen name="request" />
+      {/* Discounted trials — a separate resource with its own statuses, so its own
+          stack rather than a variant of `request`. */}
+      <Stack.Screen name="trial" />
+      <Stack.Screen name="wallet" />
     </Stack>
   );
 }

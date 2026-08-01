@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Alert, ScrollView, StyleSheet, View } from 'react-native';
+import { Alert, ScrollView, StyleSheet, Switch, View } from 'react-native';
 import { router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -18,47 +18,78 @@ import {
 } from '@/components/ui';
 import { useAppContext } from '@/context/AppContext';
 import { formatPrice } from '@/lib/catalog';
+import { MAX_FULL_NAME } from '@/lib/userAuth';
 
 export default function AccountScreen() {
   const { colors } = useTheme();
   const insets = useScreenInsets();
   const {
+    profile,
     user,
-    setUser,
+    setFullName,
     signOut,
+    serverSignOut,
     addresses,
     activeAddress,
     history,
     credits,
     apiUrl,
     saveApiUrl,
+    isDark,
+    toggleTheme,
   } = useAppContext();
 
   const [name, setName] = useState(user?.name ?? '');
-  const [phone, setPhone] = useState(user?.phone ?? '');
   const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  /** The verified number, formatted by the server. Not editable here. */
+  const phoneLabel = profile?.phoneFormatted ?? 'No number saved';
 
   const [showDevTools, setShowDevTools] = useState(false);
   const [url, setUrl] = useState(apiUrl);
 
-  const completed = history.filter((h) => h.status === 'completed' || h.status === 'pending_rating');
-  const lifetimeSpend = completed.reduce((sum, h) => sum + h.total, 0);
+  // Stats now come from the server profile.
+  // Falls back to local history counting so the screen is never empty while
+  // the profile is still loading on first launch.
+  const serverJobsCompleted = profile?.stats?.jobsCompleted;
+  const serverLifetimeSpend = profile?.stats?.lifetimeSpend;
+  const localCompleted = history.filter((h) => h.status === 'completed' || h.status === 'pending_rating');
+  const displayJobsCompleted = serverJobsCompleted ?? localCompleted.length;
+  const displayLifetimeSpend = serverLifetimeSpend ?? localCompleted.reduce((sum, h) => sum + h.total, 0);
 
+  /**
+   * The name is the only editable field — the phone number is the account's
+   * verified identity and changing it means signing in on the new number.
+   */
   async function handleSaveProfile() {
     if (!name.trim()) {
       Alert.alert('Name required', 'Please enter your name.');
       return;
     }
-    if (!/^\d{10}$/.test(phone)) {
-      Alert.alert('Invalid number', 'Please enter a valid 10-digit mobile number.');
+    if (name.trim().length > MAX_FULL_NAME) {
+      Alert.alert('Name too long', `Please keep it under ${MAX_FULL_NAME} characters.`);
       return;
     }
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    await setUser({ name: name.trim(), phone });
-    setEditing(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+
+    setSaving(true);
+    try {
+      await setFullName(name.trim());
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setEditing(false);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      // A 401 has already signed the user out inside the context; the tab gate
+      // picks that up and routes to login, so only the message is needed here.
+      Alert.alert(
+        'Could not save',
+        err instanceof Error ? err.message : 'Please try again in a moment.'
+      );
+    } finally {
+      setSaving(false);
+    }
   }
 
   function handleSignOut() {
@@ -69,10 +100,28 @@ export default function AccountScreen() {
         style: 'destructive',
         onPress: async () => {
           await signOut();
-          router.replace('/onboarding');
+          router.replace('/login');
         },
       },
     ]);
+  }
+
+  function handleSignOutAllDevices() {
+    Alert.alert(
+      'Sign out everywhere?',
+      'This will sign you out on every device — useful if your phone is lost or stolen.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Sign out everywhere',
+          style: 'destructive',
+          onPress: async () => {
+            await serverSignOut();
+            router.replace('/login');
+          },
+        },
+      ]
+    );
   }
 
   return (
@@ -97,25 +146,34 @@ export default function AccountScreen() {
               ]}
             >
               <Text variant="display" tone="onHero">
-                {(user?.name ?? 'K')[0].toUpperCase()}
+                {profile?.displayInitial ?? 'K'}
               </Text>
             </View>
             <View style={styles.flex}>
               <Text variant="h1" tone="onHero" numberOfLines={1}>
-                {user?.name ?? 'Set your name'}
+                {profile?.fullName ?? 'Set your name'}
               </Text>
-              <Text variant="body" tone="onHeroMuted">
-                {user?.phone ? `+91 ${user.phone}` : 'No number saved'}
-              </Text>
+              <View style={styles.verifiedRow}>
+                <Text variant="body" tone="onHeroMuted">
+                  {phoneLabel}
+                </Text>
+                {profile?.phoneVerified ? (
+                  <MaterialCommunityIcons
+                    name="check-decagram"
+                    size={15}
+                    color={colors.onHeroMuted}
+                  />
+                ) : null}
+              </View>
             </View>
           </View>
 
           <View style={styles.heroStats}>
-            <HeroStat value={String(completed.length)} label="Jobs done" />
+            <HeroStat value={String(displayJobsCompleted)} label="Jobs done" />
             <View style={[styles.heroDivider, { backgroundColor: colors.onHeroBorder }]} />
             <HeroStat value={formatPrice(credits)} label="Credits" />
             <View style={[styles.heroDivider, { backgroundColor: colors.onHeroBorder }]} />
-            <HeroStat value={formatPrice(lifetimeSpend)} label="Lifetime spend" />
+            <HeroStat value={formatPrice(displayLifetimeSpend)} label="Lifetime spend" />
           </View>
         </View>
 
@@ -126,7 +184,6 @@ export default function AccountScreen() {
             actionLabel={editing ? 'Cancel' : 'Edit'}
             onAction={() => {
               setName(user?.name ?? '');
-              setPhone(user?.phone ?? '');
               setEditing((prev) => !prev);
             }}
             style={styles.sectionTop}
@@ -141,20 +198,26 @@ export default function AccountScreen() {
                 onChangeText={setName}
                 placeholder="Your full name"
                 autoCapitalize="words"
+                error={
+                  name.trim().length > MAX_FULL_NAME
+                    ? `Please keep it under ${MAX_FULL_NAME} characters`
+                    : undefined
+                }
+                hint="Your expert sees this name on every booking"
               />
               <Field
                 label="Mobile number"
                 prefix="+91"
-                value={phone}
-                onChangeText={(text) => setPhone(text.replace(/\D/g, '').slice(0, 10))}
-                placeholder="10-digit number"
-                keyboardType="phone-pad"
+                value={profile?.phone ?? ''}
+                editable={false}
+                hint="Verified — sign in on another number to change it"
                 containerStyle={styles.field}
               />
               <Button
-                label="Save changes"
-                icon="content-save-outline"
+                label={saving ? 'Saving…' : 'Save changes'}
+                icon={saving ? undefined : 'content-save-outline'}
                 fullWidth
+                loading={saving}
                 onPress={handleSaveProfile}
                 style={styles.field}
               />
@@ -164,12 +227,12 @@ export default function AccountScreen() {
               <ListRow
                 icon="account-outline"
                 label="Name"
-                value={user?.name ?? 'Not set'}
+                value={profile?.fullName ?? 'Not set'}
               />
               <ListRow
                 icon="phone-outline"
                 label="Mobile"
-                value={user?.phone ? `+91 ${user.phone}` : 'Not set'}
+                value={phoneLabel}
                 last
               />
               {saved ? (
@@ -202,6 +265,15 @@ export default function AccountScreen() {
               value={`${formatPrice(credits)} in credits`}
               onPress={() => router.push('/coupons')}
             />
+            {/* The trial reward lands here and nowhere else, so the wallet needs
+                its own way in — a ₹40 credit the customer cannot find is a ₹40
+                credit that did not happen as far as they are concerned. */}
+            <ListRow
+              icon="wallet-outline"
+              label="Reward wallet"
+              value="Cashback from trial bookings"
+              onPress={() => router.push('/wallet')}
+            />
             <ListRow
               icon="clipboard-text-outline"
               label="My bookings"
@@ -217,11 +289,11 @@ export default function AccountScreen() {
             <ListRow
               icon="headset"
               label="Talk to support"
-              value="7 AM – 11 PM, all days"
+              value={profile?.support?.hours ?? '7 AM – 11 PM, all days'}
               onPress={() =>
                 Alert.alert(
                   'Kaaryo support',
-                  'Reach us at 1800-000-000 or care@kaaryo.in. Average response time under 4 minutes.'
+                  `Reach us at ${profile?.support?.phone ?? '1800-000-000'} or ${profile?.support?.email ?? 'care@kaaryo.in'}. Average response time under 4 minutes.`
                 )
               }
             />
@@ -248,17 +320,38 @@ export default function AccountScreen() {
             />
           </Card>
 
-          {/* ── Appearance note ──────────────────────────────────────────── */}
-          <Card tone="tint" padding="md" style={styles.sectionTop} bordered={false}>
+          {/* ── Appearance ───────────────────────────────────────────────── */}
+          <SectionHeader title="Appearance" style={styles.sectionTop} />
+          <Card padding="lg">
             <View style={styles.themeRow}>
-              <MaterialCommunityIcons
-                name="theme-light-dark"
-                size={18}
-                color={colors.secondaryForeground}
+              <View
+                style={[
+                  styles.themeIconWrap,
+                  { backgroundColor: isDark ? colors.primary : colors.secondary },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name={isDark ? 'weather-night' : 'white-balance-sunny'}
+                  size={20}
+                  color={isDark ? colors.primaryForeground : colors.secondaryForeground}
+                />
+              </View>
+              <View style={styles.flex}>
+                <Text variant="bodySemi">
+                  {isDark ? 'Dark mode' : 'Light mode'}
+                </Text>
+                <Text variant="caption" tone="muted">
+                  {isDark ? 'Switch to light appearance' : 'Switch to dark appearance'}
+                </Text>
+              </View>
+              <Switch
+                value={isDark}
+                onValueChange={() => {
+                  toggleTheme();
+                }}
+                trackColor={{ false: colors.border, true: colors.primary }}
+                thumbColor={colors.card}
               />
-              <Text variant="caption" style={[styles.flex, { color: colors.secondaryForeground }]}>
-                Kaaryo follows your system light or dark appearance automatically.
-              </Text>
             </View>
           </Card>
 
@@ -303,6 +396,16 @@ export default function AccountScreen() {
             haptic={false}
             onPress={handleSignOut}
             style={styles.signOut}
+          />
+
+          <Button
+            label="Sign out on all devices"
+            variant="outline"
+            icon="devices"
+            fullWidth
+            haptic={false}
+            onPress={handleSignOutAllDevices}
+            style={styles.signOutAll}
           />
 
           <Text variant="caption" tone="muted" center>
@@ -364,6 +467,15 @@ const styles = StyleSheet.create({
   body: { paddingHorizontal: spacing.lg },
   sectionTop: { marginTop: spacing['2xl'] },
   field: { marginTop: spacing.lg },
-  themeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  signOut: { marginTop: spacing['2xl'], marginBottom: spacing.lg },
+  verifiedRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  themeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  themeIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: radii.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  signOut: { marginTop: spacing['2xl'], marginBottom: spacing.sm },
+  signOutAll: { marginBottom: spacing.lg },
 });

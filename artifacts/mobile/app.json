@@ -26,7 +26,8 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#0A3C30"
-      }
+      },
+      "package": "com.akashtwr.mobile"
     },
     "web": {
       "favicon": "./assets/images/icon.png"

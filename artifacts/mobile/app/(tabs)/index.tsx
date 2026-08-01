@@ -1,6 +1,6 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
+  Animated,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -16,8 +16,8 @@ import { useScreenInsets } from '@/hooks/useScreenInsets';
 import { radii, spacing } from '@/constants/theme';
 import { useAppContext } from '@/context/AppContext';
 import { HeroHeader, HeroSearchBar } from '@/components/HeroHeader';
-import { MapBackdrop } from '@/components/MapBackdrop';
 import { CartBar } from '@/components/CartBar';
+import { InstantBookingSheet } from '@/components/InstantBookingSheet';
 import { ServiceRailCard, ServiceTile } from '@/components/ServiceTile';
 import {
   Badge,
@@ -32,6 +32,7 @@ import {
   BUNDLES,
   formatMinutes,
   formatPrice,
+  getGroup,
   getPopularServices,
   getServicesByGroup,
   PROMISES,
@@ -45,18 +46,16 @@ import {
 /** Arrival promise shown in the hero badge, in minutes. */
 const INSTANT_ETA = 10;
 
-/** Experts shown as "near you" in the map caption. */
-const NEARBY_EXPERTS = 34;
-
 export default function HomeScreen() {
   const { colors, isDark } = useTheme();
   const insets = useScreenInsets();
   const { width } = useWindowDimensions();
   const {
-    user,
-    isLoadingUser,
+    profile,
     activeAddress,
     history,
+    activeRequest,
+    activeTrial,
     credits,
     mode,
     setMode,
@@ -65,29 +64,61 @@ export default function HomeScreen() {
     quantityForService,
   } = useAppContext();
 
-  useEffect(() => {
-    if (!isLoadingUser && !user) router.replace('/onboarding');
-  }, [user, isLoadingUser]);
+  /**
+   * The service kept behind the instant sheet. Held after the sheet closes so
+   * its content is still there to animate out.
+   */
+  const [instantService, setInstantService] = useState<Service | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
 
-  if (isLoadingUser) {
-    return (
-      <View style={[styles.loading, { backgroundColor: colors.background }]}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
-  if (!user) return null;
+  // The auth gate lives in `(tabs)/_layout` so it covers every tab; this screen
+  // only has to tolerate the frame before the redirect lands.
+  if (!profile) return null;
 
   const activeBooking = history.find((h) =>
     ['searching', 'in_progress', 'pending_rating'].includes(h.status)
   );
 
-  // Three tiles per row within the 16pt gutter, separated by a 10pt gap.
-  const tileWidth = (width - spacing.lg * 2 - 10 * 2) / 3;
+  // Three tiles per row within the 16pt gutter.
+  // Tile is (available width − 2 gaps) / 3.  We use space-between rows so
+  // the gaps are handled by the layout engine — no gap math needed here.
+  const TILE_GAP = 10;
+  const tileWidth = (width - spacing.lg * 2 - TILE_GAP * 2) / 3;
   const popular = getPopularServices();
 
-  function openService(serviceKey: string) {
-    router.push({ pathname: '/service/[key]', params: { key: serviceKey } });
+  /**
+   * Whether this service goes out for instant dispatch rather than into the cart.
+   * Deep cleaning and repairs need machines and a fixed slot, so they keep the
+   * scheduled flow whatever the toggle says.
+   */
+  const dispatchesInstantly = (service: Service) =>
+    mode === 'instant' && getGroup(service.group).supportsInstant;
+
+  function openInstantSheet(service: Service) {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setInstantService(service);
+    setSheetOpen(true);
+  }
+
+  /**
+   * Instant skips the catalogue page entirely: the promise is an expert at the
+   * door in ten minutes, and a detail page then a cart then a checkout is three
+   * screens too many for that.
+   */
+  function openService(service: Service) {
+    if (dispatchesInstantly(service)) return openInstantSheet(service);
+    router.push({ pathname: '/service/[key]', params: { key: service.key } });
+  }
+
+  /**
+   * The tile's own add button. In instant mode there is no cart to add to — the
+   * booking goes straight out — so it opens the same sheet the tile body does.
+   * Without this the most obvious "pick this one" control on the grid silently
+   * stacks a cart line instead, which is the opposite of what Instant promises.
+   */
+  function addService(service: Service) {
+    if (dispatchesInstantly(service)) return openInstantSheet(service);
+    addToCart(service.key);
   }
 
   return (
@@ -109,7 +140,7 @@ export default function HomeScreen() {
                   .join(', ')
               : 'Tap to add your address'
           }
-          initial={(user.name || 'K')[0].toUpperCase()}
+          initial={profile.displayInitial}
           credits={credits}
           onPressLocation={() => router.push('/address')}
           onPressProfile={() => router.push('/(tabs)/profile')}
@@ -121,37 +152,102 @@ export default function HomeScreen() {
           />
         </HeroHeader>
 
-        {/* ── Locate ─────────────────────────────────────────────────────── */}
-        <MapBackdrop
-          height={188}
-          caption={
-            activeAddress
-              ? `${NEARBY_EXPERTS} experts near ${activeAddress.locality}`
-              : 'Add an address to see experts near you'
-          }
-        />
-
         <View style={styles.sheet}>
           {/* ── Dispatch mode ───────────────────────────────────────────── */}
-          <View style={styles.modeRow}>
-            <ModeCard
-              active={mode === 'schedule'}
-              title="Schedule"
-              subtitle="Pick your time"
-              icon="calendar-clock"
-              onPress={() => setMode('schedule')}
-            />
-            <ModeCard
-              active={mode === 'instant'}
-              title="Instant"
-              subtitle="Get help now"
-              icon="lightning-bolt"
-              onPress={() => setMode('instant')}
-            />
-          </View>
+          <ModeToggle
+            mode={mode}
+            onSelect={(m) => setMode(m)}
+          />
+
+          {/* ── Live trial ──────────────────────────────────────────────── */}
+          {/* Its own strip rather than another branch of the chain below: a trial
+              and a normal booking can both be live at once, and an outstanding
+              feedback form is the one thing here that somebody else is waiting on. */}
+          {activeTrial ? (
+            <Pressable
+              onPress={() =>
+                router.push({ pathname: '/trial/track/[id]', params: { id: activeTrial.id } })
+              }
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.liveCard,
+                { backgroundColor: colors.heroBackground, opacity: pressed ? 0.92 : 1 },
+              ]}
+            >
+              <View style={[styles.liveDot, { backgroundColor: colors.primary }]} />
+              <View style={styles.flex}>
+                <Text variant="bodySemi" tone="onHero" numberOfLines={1}>
+                  {activeTrial.feedbackPending
+                    ? 'Rate your trial — it onboards a new professional'
+                    : activeTrial.payment.payable
+                      ? 'Work done — pay for your trial'
+                      : activeTrial.status === 'assigned'
+                        ? 'Asking a new professional near you'
+                        : 'Your new professional is on the way'}
+                </Text>
+                <Text variant="caption" style={{ color: colors.onHeroMuted }} numberOfLines={1}>
+                  Discounted trial · {formatPrice(activeTrial.pricing.userPrice)}
+                </Text>
+              </View>
+              <Text variant="captionSemi" tone="onHero">
+                {activeTrial.feedbackPending
+                  ? 'Rate'
+                  : activeTrial.payment.payable
+                    ? 'Pay'
+                    : 'Track'}
+              </Text>
+              <MaterialCommunityIcons
+                name="chevron-right"
+                size={18}
+                color={colors.heroForeground}
+              />
+            </Pressable>
+          ) : null}
 
           {/* ── Live booking ────────────────────────────────────────────── */}
-          {activeBooking ? (
+          {/* The server's active instant request wins over a local scheduled one:
+              it is the thing actually happening right now, and it is the only one
+              that can be waiting on a payment. */}
+          {activeRequest ? (
+            <Pressable
+              onPress={() =>
+                router.push({ pathname: '/request/[id]', params: { id: activeRequest.id } })
+              }
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.liveCard,
+                { backgroundColor: colors.primary, opacity: pressed ? 0.92 : 1 },
+              ]}
+            >
+              <View style={[styles.liveDot, { backgroundColor: colors.primaryForeground }]} />
+              <View style={styles.flex}>
+                <Text variant="bodySemi" tone="onPrimary" numberOfLines={1}>
+                  {activeRequest.payment.payable
+                    ? 'Work done — pay your professional'
+                    : activeRequest.status === 'searching'
+                      ? 'Finding a professional near you'
+                      : 'Your professional is on the way'}
+                </Text>
+                <Text
+                  variant="caption"
+                  style={{ color: colors.onHeroMuted }}
+                  numberOfLines={1}
+                >
+                  {activeRequest.subcategoryName
+                    ? `${activeRequest.categoryName} · ${activeRequest.subcategoryName}`
+                    : activeRequest.categoryName}
+                </Text>
+              </View>
+              <Text variant="captionSemi" tone="onPrimary">
+                {activeRequest.payment.payable ? 'Pay' : 'Track'}
+              </Text>
+              <MaterialCommunityIcons
+                name="chevron-right"
+                size={18}
+                color={colors.primaryForeground}
+              />
+            </Pressable>
+          ) : activeBooking ? (
             <Pressable
               onPress={() =>
                 router.push({ pathname: '/tracking/[id]', params: { id: activeBooking.id } })
@@ -233,34 +329,53 @@ export default function HomeScreen() {
                 service={service}
                 width={264}
                 inCart={quantityForService(service.key) > 0}
-                onPress={() => openService(service.key)}
-                onAdd={() => addToCart(service.key)}
+                instant={dispatchesInstantly(service)}
+                onPress={() => openService(service)}
+                onAdd={() => addService(service)}
               />
             ))}
           </ScrollView>
 
           {/* ── Full catalog, by group ──────────────────────────────────── */}
-          {SERVICE_GROUPS.map((group) => (
-            <View key={group.key}>
-              <SectionHeader
-                title={group.title}
-                subtitle={group.subtitle}
-                style={styles.sectionTop}
-              />
-              <View style={styles.grid}>
-                {getServicesByGroup(group.key).map((service: Service) => (
-                  <ServiceTile
-                    key={service.key}
-                    service={service}
-                    width={tileWidth}
-                    quantity={quantityForService(service.key)}
-                    onPress={() => openService(service.key)}
-                    onAdd={() => addToCart(service.key)}
-                  />
-                ))}
+          {SERVICE_GROUPS.map((group) => {
+            const services = getServicesByGroup(group.key);
+            // Chunk into explicit rows of 3 — avoids flexWrap+gap bugs in RN.
+            const rows: Service[][] = [];
+            for (let i = 0; i < services.length; i += 3) {
+              rows.push(services.slice(i, i + 3));
+            }
+            return (
+              <View key={group.key}>
+                <SectionHeader
+                  title={group.title}
+                  subtitle={group.subtitle}
+                  style={styles.sectionTop}
+                />
+                <View style={styles.grid}>
+                  {rows.map((row, rowIdx) => (
+                    <View key={rowIdx} style={styles.tileRow}>
+                      {row.map((service: Service) => (
+                        <ServiceTile
+                          key={service.key}
+                          service={service}
+                          width={tileWidth}
+                          quantity={quantityForService(service.key)}
+                          instant={dispatchesInstantly(service)}
+                          onPress={() => openService(service)}
+                          onAdd={() => addService(service)}
+                        />
+                      ))}
+                      {/* Pad incomplete last row so tiles stay left-aligned */}
+                      {row.length < 3 &&
+                        Array.from({ length: 3 - row.length }).map((_, fi) => (
+                          <View key={`filler-${fi}`} style={{ width: tileWidth }} />
+                        ))}
+                    </View>
+                  ))}
+                </View>
               </View>
-            </View>
-          ))}
+            );
+          })}
 
           {/* ── Promises ────────────────────────────────────────────────── */}
           <SectionHeader
@@ -268,7 +383,7 @@ export default function HomeScreen() {
             subtitle="Why 12 lakh families let us in"
             style={styles.sectionTop}
           />
-          <View style={styles.grid}>
+          <View style={styles.twoColGrid}>
             {PROMISES.map((promise) => (
               <Card
                 key={promise.title}
@@ -357,6 +472,14 @@ export default function HomeScreen() {
       </ScrollView>
 
       <CartBar bottomInset={insets.bottom} />
+
+      {instantService ? (
+        <InstantBookingSheet
+          service={instantService}
+          visible={sheetOpen}
+          onClose={() => setSheetOpen(false)}
+        />
+      ) : null}
     </View>
   );
 }
@@ -364,63 +487,115 @@ export default function HomeScreen() {
 // ─── Pieces ───────────────────────────────────────────────────────────────────
 
 /**
- * Instant vs Schedule selector. This is a setting, not navigation — it decides
- * how the cart is dispatched at checkout, so the active card fills with green.
+ * Pill-shaped segmented toggle: Instant ↔ Schedule.
+ *
+ * An animated thumb slides beneath the active segment so the transition is
+ * immediately legible — the user never has to guess which mode is on.
  */
-function ModeCard({
-  active,
-  title,
-  subtitle,
-  icon,
-  onPress,
+function ModeToggle({
+  mode,
+  onSelect,
 }: {
-  active: boolean;
-  title: string;
-  subtitle: string;
-  icon: 'calendar-clock' | 'lightning-bolt';
-  onPress: () => void;
+  mode: 'instant' | 'schedule';
+  onSelect: (m: 'instant' | 'schedule') => void;
 }) {
   const { colors, shadow } = useTheme();
+  // 0 = Instant (left), 1 = Schedule (right)
+  const thumbAnim = useRef(new Animated.Value(mode === 'instant' ? 0 : 1)).current;
+
+  useEffect(() => {
+    Animated.spring(thumbAnim, {
+      toValue: mode === 'instant' ? 0 : 1,
+      useNativeDriver: false,
+      tension: 280,
+      friction: 22,
+    }).start();
+  }, [mode, thumbAnim]);
+
+  const SEGMENTS: { key: 'instant' | 'schedule'; label: string; icon: 'lightning-bolt' | 'calendar-clock'; sub: string }[] = [
+    { key: 'instant', label: 'Instant', icon: 'lightning-bolt', sub: 'Get help now' },
+    { key: 'schedule', label: 'Schedule', icon: 'calendar-clock', sub: 'Pick your time' },
+  ];
+
   return (
-    <Pressable
-      onPress={() => {
-        Haptics.selectionAsync();
-        onPress();
-      }}
-      accessibilityRole="radio"
-      accessibilityState={{ selected: active }}
-      style={({ pressed }) => [
-        styles.modeCard,
+    <View
+      style={[
+        styles.toggleTrack,
+        { backgroundColor: colors.muted, borderColor: colors.border },
         shadow.sm,
-        {
-          backgroundColor: active ? colors.primary : colors.card,
-          borderColor: active ? colors.primary : colors.border,
-          opacity: pressed ? 0.9 : 1,
-        },
       ]}
+      accessibilityRole="radiogroup"
     >
-      <View
+      {/* Sliding active thumb */}
+      <Animated.View
         style={[
-          styles.modeIcon,
-          { backgroundColor: active ? colors.onHeroSurface : colors.secondary },
+          styles.toggleThumb,
+          {
+            backgroundColor: colors.primary,
+            left: thumbAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: ['2%', '51%'],
+            }),
+          },
+          shadow.md,
         ]}
-      >
-        <MaterialCommunityIcons
-          name={icon}
-          size={19}
-          color={active ? colors.primaryForeground : colors.secondaryForeground}
-        />
-      </View>
-      <Text variant="h3" tone={active ? 'onPrimary' : 'default'}>
-        {title}
-      </Text>
-      <Text
-        variant="caption"
-        style={{ color: active ? colors.onHeroMuted : colors.mutedForeground }}
-      >
-        {subtitle}
-      </Text>
-    </Pressable>
+      />
+
+      {SEGMENTS.map((seg) => {
+        const isActive = mode === seg.key;
+        return (
+          <Pressable
+            key={seg.key}
+            onPress={() => {
+              Haptics.selectionAsync();
+              onSelect(seg.key);
+            }}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: isActive }}
+            style={styles.toggleSegment}
+          >
+            <View style={styles.toggleSegmentInner}>
+              <View
+                style={[
+                  styles.toggleIconBubble,
+                  {
+                    backgroundColor: isActive
+                      ? colors.onHeroSurface
+                      : colors.secondary,
+                  },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name={seg.icon}
+                  size={18}
+                  color={
+                    isActive ? colors.primaryForeground : colors.secondaryForeground
+                  }
+                />
+              </View>
+              <View>
+                <Text
+                  variant="bodySemi"
+                  tone={isActive ? 'onPrimary' : 'default'}
+                >
+                  {seg.label}
+                </Text>
+                <Text
+                  variant="caption"
+                  style={{
+                    color: isActive
+                      ? colors.onHeroMuted
+                      : colors.mutedForeground,
+                  }}
+                >
+                  {seg.sub}
+                </Text>
+              </View>
+            </View>
+          </Pressable>
+        );
+      })}
+    </View>
   );
 }
 
@@ -481,24 +656,41 @@ function BundleCard({
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  // Pulls the mode cards up so they overlap the map, as a sheet would.
-  sheet: { paddingHorizontal: spacing.lg, marginTop: -spacing['2xl'] },
-  modeRow: { flexDirection: 'row', gap: spacing.md },
-  modeCard: {
-    flex: 1,
-    padding: spacing.lg,
-    borderRadius: radii.lg,
+  // Body content, starting straight under the hero's rounded bottom edge.
+  sheet: { paddingHorizontal: spacing.lg, marginTop: spacing.lg },
+  // ── ModeToggle ──────────────────────────────────────────────────────────────
+  toggleTrack: {
+    flexDirection: 'row',
+    borderRadius: radii.xl,
     borderWidth: StyleSheet.hairlineWidth,
-    gap: 3,
+    padding: 4,
+    position: 'relative',
+    overflow: 'hidden',
   },
-  modeIcon: {
-    width: 34,
-    height: 34,
+  toggleThumb: {
+    position: 'absolute',
+    top: 4,
+    bottom: 4,
+    width: '48%',
+    borderRadius: radii.lg,
+  },
+  toggleSegment: {
+    flex: 1,
+    zIndex: 1,
+  },
+  toggleSegmentInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+  },
+  toggleIconBubble: {
+    width: 36,
+    height: 36,
     borderRadius: radii.sm,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: spacing.sm,
   },
   liveCard: {
     flexDirection: 'row',
@@ -513,7 +705,9 @@ const styles = StyleSheet.create({
   // Rails bleed to the screen edge so the next card peeks in from the right.
   railBleed: { marginHorizontal: -spacing.lg },
   rail: { paddingHorizontal: spacing.lg, gap: spacing.md, paddingBottom: 4 },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  grid: { flexDirection: 'column', gap: 10 },
+  tileRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  twoColGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   promiseTitle: { marginTop: spacing.sm, marginBottom: 2 },
   statsCard: { marginTop: spacing['2xl'] },
   statsRow: { flexDirection: 'row', alignItems: 'center' },

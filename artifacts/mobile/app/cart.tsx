@@ -29,7 +29,7 @@ export default function CartScreen() {
   const { colors } = useTheme();
   const insets = useScreenInsets();
   const {
-    user,
+    profile,
     cartLines,
     itemCount,
     subtotal,
@@ -75,12 +75,18 @@ export default function CartScreen() {
   }
 
   async function handlePay() {
-    if (!user) {
-      setError('Add your name and phone in Account before booking.');
+    if (!profile?.fullName) {
+      setError('Add your name in Account before booking.');
       return;
     }
     if (!activeAddress) {
       setError('Add a service address to continue.');
+      return;
+    }
+    // Dispatch is purely geographic, so an address with no coordinates would be
+    // booked at 0,0 and never reach a worker. Block rather than send a bad fix.
+    if (typeof activeAddress.lat !== 'number' || typeof activeAddress.lng !== 'number') {
+      setError('This address has no location pinned. Please re-add it from the address screen.');
       return;
     }
     if (needsSlot) {
@@ -115,13 +121,15 @@ export default function CartScreen() {
 
     try {
       const response = await createServiceRequest({
-        customerName: user.name,
-        customerPhone: user.phone,
+        // From the verified profile, not a local form — this is what the worker
+        // sees, and what links the booking to the account server-side.
+        customerName: profile.fullName,
+        customerPhone: profile.phone,
         category: cartLines[0].service.key,
         subcategory: cartLines[0].duration.key,
         jobDescription,
-        lat: activeAddress.lat ?? 0,
-        lng: activeAddress.lng ?? 0,
+        lat: activeAddress.lat,
+        lng: activeAddress.lng,
         address: [activeAddress.line, activeAddress.locality, activeAddress.city]
           .filter(Boolean)
           .join(', '),
@@ -335,7 +343,11 @@ export default function CartScreen() {
           <DetailRow
             icon="account-outline"
             label="Contact"
-            value={user ? `${user.name} · +91 ${user.phone}` : 'Not set'}
+            value={
+              profile
+                ? `${profile.fullName ?? 'Name not set'} · ${profile.phoneFormatted}`
+                : 'Not signed in'
+            }
             actionLabel="Edit"
             onAction={() => router.push('/(tabs)/profile')}
           />

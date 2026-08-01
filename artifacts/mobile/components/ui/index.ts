@@ -2,6 +2,7 @@
 
 export { Text, type TextProps, type TextTone, type TextVariant } from './Text';
 export { Button, BottomBar, IconButton, type ButtonSize, type ButtonVariant } from './Button';
+export { BottomSheet } from './BottomSheet';
 export {
   Badge,
   Card,

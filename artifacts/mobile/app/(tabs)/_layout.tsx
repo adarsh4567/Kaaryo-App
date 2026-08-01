@@ -1,11 +1,12 @@
-import React from 'react';
-import { StyleSheet, View } from 'react-native';
+import React, { useEffect } from 'react';
+import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Tabs } from 'expo-router';
+import { router, Tabs } from 'expo-router';
 import { useTheme } from '@/hooks/useColors';
 import { useScreenInsets } from '@/hooks/useScreenInsets';
-import { fonts, radii, TAB_BAR_HEIGHT } from '@/constants/theme';
+import { fonts, radii, spacing, TAB_BAR_HEIGHT } from '@/constants/theme';
 import { useAppContext } from '@/context/AppContext';
+import { Button, EmptyState } from '@/components/ui';
 import type { MdiName } from '@/lib/catalog';
 
 /**
@@ -17,11 +18,53 @@ import type { MdiName } from '@/lib/catalog';
 export default function TabLayout() {
   const { colors, shadow } = useTheme();
   const insets = useScreenInsets();
-  const { history } = useAppContext();
+  const { history, liveRequests, liveTrials, profile, isRestoringSession, isBlocked, signOut } =
+    useAppContext();
 
-  const liveBookings = history.filter((h) =>
-    ['searching', 'in_progress', 'pending_rating'].includes(h.status)
-  ).length;
+  // All three booking families count: instant requests and discounted trials come
+  // from the server, scheduled ones from the on-device history.
+  const liveBookings =
+    liveRequests.length +
+    liveTrials.length +
+    history.filter((h) => ['searching', 'in_progress', 'pending_rating'].includes(h.status))
+      .length;
+
+  /**
+   * The auth gate for every tab, not just Home — a deep link or a tab press while
+   * signed out would otherwise land on an empty screen. Held until the stored
+   * token has been checked so a signed-in user never sees the login screen flash.
+   */
+  useEffect(() => {
+    if (isRestoringSession || isBlocked) return;
+    if (!profile) router.replace('/login');
+    else if (!profile.profileCompleted) router.replace('/name');
+  }, [profile, isRestoringSession, isBlocked]);
+
+  if (isRestoringSession) {
+    return (
+      <View style={[styles.center, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
+
+  // A blocked account is terminal: signing in again just returns another 403, so
+  // the only route forward is support.
+  if (isBlocked) {
+    return (
+      <View style={[styles.center, { backgroundColor: colors.background }]}>
+        <EmptyState
+          icon="account-cancel-outline"
+          title="Account on hold"
+          message="This account has been blocked. Please contact us at care@kaaryo.in or 1800-000-000 and we will help sort it out."
+        >
+          <Button label="Sign out" variant="destructive" onPress={signOut} />
+        </EmptyState>
+      </View>
+    );
+  }
+
+  if (!profile) return null;
 
   return (
     <Tabs
@@ -112,6 +155,7 @@ function TabIcon({
 }
 
 const styles = StyleSheet.create({
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.lg },
   bar: {
     position: 'absolute',
     left: 16,

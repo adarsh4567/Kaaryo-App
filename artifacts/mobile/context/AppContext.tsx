@@ -7,18 +7,55 @@ import React, {
   useMemo,
   useState,
 } from 'react';
-import { setApiUrl } from '@/lib/api';
+import { AppState, useColorScheme } from 'react-native';
+import { DEFAULT_API_URL, setApiUrl } from '@/lib/api';
+import { setThemeOverride } from '@/hooks/useColors';
 import {
   BUNDLES,
-  COUPONS,
   getServiceByKey,
   type Coupon,
   type DurationOption,
   type Service,
 } from '@/lib/catalog';
+import { clearToken, loadToken, saveToken } from '@/lib/tokenStore';
+import {
+  addUserAddress,
+  deleteUserAddress,
+  getProfile,
+  getUserAddresses,
+  getUserCoupons,
+  isApiError,
+  selectUserAddress,
+  serverLogout as apiServerLogout,
+  updateFullName,
+  type ServerAddress,
+  type ServerCoupon,
+  type UserProfile,
+} from '@/lib/userAuth';
+import {
+  isLiveRequest,
+  isRequestApiError,
+  listUserRequests,
+  type UserRequest,
+} from '@/lib/userRequests';
+import {
+  isLiveTrial,
+  isTrialApiError,
+  listTrials,
+  type Trial,
+  type TrialSummary,
+} from '@/lib/userTrials';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+/**
+ * The identity fields a booking needs, projected off the verified profile.
+ *
+ * Kept as its own shape because the cart and checkout screens only ever want a
+ * name and a number — they should not have to know about tokens or profile
+ * completion. Derived, never stored: the server's profile is the only source of
+ * truth for who the user is.
+ */
 export interface UserInfo {
   name: string;
   phone: string;
@@ -72,10 +109,32 @@ export interface HistoryEntry {
 
 interface AppContextValue {
   // Identity
+  /** The verified account. Null means signed out — this is the auth gate's flag. */
+  profile: UserProfile | null;
+  /**
+   * The bearer token for `/api/user/*`. Exposed because the instant booking flow
+   * calls those endpoints directly from its screens; nothing else should read it.
+   */
+  token: string | null;
+  /** Name and phone for bookings, projected off `profile`. */
   user: UserInfo | null;
+  /**
+   * True while the stored token is being checked on launch. The gate must wait
+   * for this, or a signed-in user sees the login screen flash on every cold start.
+   */
+  isRestoringSession: boolean;
+  /** Kept as an alias of `isRestoringSession` for screens that read a spinner flag. */
   isLoadingUser: boolean;
-  setUser: (user: UserInfo) => Promise<void>;
+  /** 403 — the account is blocked. Terminal: signing in again returns another 403. */
+  isBlocked: boolean;
+  signIn: (token: string, profile: UserProfile) => Promise<void>;
+  setFullName: (fullName: string) => Promise<void>;
   signOut: () => Promise<void>;
+  /**
+   * Revokes every token on the account server-side (lost phone / stolen device).
+   * Also calls the local signOut so the app clears state and routes to login.
+   */
+  serverSignOut: () => Promise<void>;
 
   // Address book
   addresses: Address[];
@@ -109,13 +168,68 @@ interface AppContextValue {
   discount: number;
   total: number;
 
-  // Wallet
+  // Wallet — credits now come from profile.credits (same ledger as /api/user/wallet)
   credits: number;
 
-  // Bookings
+  // Coupons (server-side, personalised)
+  /** Personalised coupon list from GET /api/user/coupons. Empty until first fetch. */
+  serverCoupons: ServerCoupon[];
+  isLoadingCoupons: boolean;
+  /** Refresh the coupon list. Call on Offers/Coupons screen focus. */
+  refreshCoupons: () => Promise<void>;
+
+  // Bookings — scheduled, placed against the legacy endpoint and stored on device
   history: HistoryEntry[];
   addToHistory: (entry: HistoryEntry) => Promise<void>;
   updateHistoryStatus: (id: string, status: string) => Promise<void>;
+
+  /**
+   * Instant bookings, owned by the server.
+   *
+   * These are not cached to disk: unlike the scheduled entries above, the server
+   * is the only authority on a live request's status, countdown and payment
+   * state, and a stale copy of any of those would be worse than a spinner.
+   */
+  serviceRequests: UserRequest[];
+  /** Still wanting attention — searching, running, or finished but unpaid. */
+  liveRequests: UserRequest[];
+  pastRequests: UserRequest[];
+  /** The one request a customer may have in flight, or null. */
+  activeRequest: UserRequest | null;
+  isLoadingRequests: boolean;
+  refreshRequests: () => Promise<void>;
+  /** Folds in a request a screen already holds, from a create/cancel/pay reply. */
+  mergeRequest: (request: UserRequest) => void;
+
+  /**
+   * Discounted trial bookings, owned by the server.
+   *
+   * Kept apart from `serviceRequests` rather than merged into it, because a trial
+   * is a different resource with a different status set — `assigned` instead of
+   * `searching`, no `pending_rating` — and a list that flattened the two would
+   * have to un-flatten them again at every branch. The bookings screen normalises
+   * both into its own row shape instead.
+   *
+   * Split into full objects and history summaries because the server sends two
+   * shapes: `active` rows carry the whole trial, history rows are compact and
+   * have no worker, description or payment object.
+   */
+  activeTrials: Trial[];
+  trialHistory: TrialSummary[];
+  /** Still wanting attention — searching, running, unpaid, or unrated. */
+  liveTrials: Trial[];
+  /** The one trial a customer may have in flight, or null. */
+  activeTrial: Trial | null;
+  isLoadingTrials: boolean;
+  refreshTrials: () => Promise<void>;
+  /** Folds in a trial a screen already holds, from a create/cancel/pay reply. */
+  mergeTrial: (trial: Trial) => void;
+
+  // Theme
+  /** The active resolved scheme — true means dark. */
+  isDark: boolean;
+  /** Cycle through dark → light (or light → dark) and persist the choice. */
+  toggleTheme: () => void;
 
   // Backend
   apiUrl: string;
@@ -128,63 +242,153 @@ interface AppContextValue {
  * Storage keys are namespaced `v2` because the cart, address book and booking
  * shapes changed — `v1` payloads would hydrate into unrenderable state.
  */
-const STORAGE_USER = '@kaaryo/v2/user';
+const STORAGE_PROFILE = '@kaaryo/v2/profile';
 const STORAGE_HISTORY = '@kaaryo/v2/history';
 const STORAGE_CART = '@kaaryo/v2/cart';
 const STORAGE_ADDRESSES = '@kaaryo/v2/addresses';
 const STORAGE_ACTIVE_ADDRESS = '@kaaryo/v2/activeAddress';
 const STORAGE_API_URL = '@kaaryo/v2/apiUrl';
+const STORAGE_THEME = '@kaaryo/v2/theme';
 
-const DEFAULT_API_URL = 'http://localhost:4000';
+/**
+ * The category-flow build wrote the API URL under a `v3` prefix, so a device that
+ * was signed in against a working server has its address filed under a key this
+ * build does not read. Unlike the cart and profile payloads, the URL is a plain
+ * string whose shape never changed — so it is recovered rather than stranded.
+ * Without this the app silently falls back to `localhost`, where a physical
+ * device can reach nothing, and sign-in becomes impossible.
+ */
+const STORAGE_API_URL_V3 = '@kaaryo/v3/apiUrl';
+
 
 /** Flat convenience fee, shown as its own line so the total never surprises. */
 export const PLATFORM_FEE = 19;
 
-/** Sign-up reward, spendable against any booking. */
-export const SIGNUP_CREDITS = 150;
+/**
+ * How often the live instant request is re-read while one is in flight.
+ *
+ * Deliberately slower than the 2.5s the dispatch screen polls at: this one only
+ * has to keep the tab badge and the home strip honest, while that one is driving
+ * a visible countdown.
+ */
+const LIVE_POLL_MS = 6000;
 
 // ─── Context ──────────────────────────────────────────────────────────────────
 
 const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUserState] = useState<UserInfo | null>(null);
-  const [isLoadingUser, setIsLoadingUser] = useState(true);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [isRestoringSession, setIsRestoringSession] = useState(true);
+  const [isBlocked, setIsBlocked] = useState(false);
   const [addresses, setAddresses] = useState<Address[]>([]);
   const [activeAddressId, setActiveAddressId] = useState<string | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [serviceRequests, setServiceRequests] = useState<UserRequest[]>([]);
+  const [isLoadingRequests, setIsLoadingRequests] = useState(false);
+  const [activeTrials, setActiveTrials] = useState<Trial[]>([]);
+  const [trialHistory, setTrialHistory] = useState<TrialSummary[]>([]);
+  const [isLoadingTrials, setIsLoadingTrials] = useState(false);
+  const [serverCoupons, setServerCoupons] = useState<ServerCoupon[]>([]);
+  const [isLoadingCoupons, setIsLoadingCoupons] = useState(false);
   const [mode, setMode] = useState<BookingMode>('instant');
   const [scheduledSlot, setScheduledSlot] = useState<string | null>(null);
   const [couponCode, setCouponCode] = useState<string | null>(null);
   const [apiUrl, setApiUrlState] = useState(DEFAULT_API_URL);
+  /** null = follow system; 'light' | 'dark' = explicit user override. */
+  const [themeOverride, setThemeOverride_] = useState<'light' | 'dark' | null>(null);
+  const systemScheme = useColorScheme();
+  const isDark = themeOverride != null ? themeOverride === 'dark' : systemScheme === 'dark';
+
+  // Keep the module-level singleton in useColors in sync.
+  useEffect(() => { setThemeOverride(themeOverride); }, [themeOverride]);
 
   // ── Hydration ──────────────────────────────────────────────────────────────
 
+  /**
+   * Restores the session on launch.
+   *
+   * The cached profile is shown immediately so the app never flashes a login
+   * screen at a signed-in user, then `GET /api/user/profile` revalidates the token
+   * in the background. Only a 401 clears the session — a network failure has to
+   * leave the user signed in, or losing signal would log them out.
+   */
   useEffect(() => {
     async function hydrate() {
+      let restoredToken: string | null = null;
       try {
-        const [rawUser, rawHistory, rawCart, rawAddresses, rawActive, rawApiUrl] =
-          await Promise.all([
-            AsyncStorage.getItem(STORAGE_USER),
-            AsyncStorage.getItem(STORAGE_HISTORY),
-            AsyncStorage.getItem(STORAGE_CART),
-            AsyncStorage.getItem(STORAGE_ADDRESSES),
-            AsyncStorage.getItem(STORAGE_ACTIVE_ADDRESS),
-            AsyncStorage.getItem(STORAGE_API_URL),
-          ]);
-        if (rawUser) setUserState(JSON.parse(rawUser));
+        const [
+          rawProfile,
+          rawHistory,
+          rawCart,
+          rawAddresses,
+          rawActive,
+          rawApiUrl,
+          rawApiUrlV3,
+          rawTheme,
+          storedToken,
+        ] = await Promise.all([
+          AsyncStorage.getItem(STORAGE_PROFILE),
+          AsyncStorage.getItem(STORAGE_HISTORY),
+          AsyncStorage.getItem(STORAGE_CART),
+          AsyncStorage.getItem(STORAGE_ADDRESSES),
+          AsyncStorage.getItem(STORAGE_ACTIVE_ADDRESS),
+          AsyncStorage.getItem(STORAGE_API_URL),
+          AsyncStorage.getItem(STORAGE_API_URL_V3),
+          AsyncStorage.getItem(STORAGE_THEME),
+          loadToken(),
+        ]);
+
+        // The API base URL must be applied before any request goes out — the
+        // session check below is the first thing that needs it.
+        const url = rawApiUrl ?? rawApiUrlV3 ?? DEFAULT_API_URL;
+        setApiUrlState(url);
+        setApiUrl(url);
+        // Promote a recovered v3 address so this is a one-time migration.
+        if (!rawApiUrl && rawApiUrlV3) {
+          await AsyncStorage.setItem(STORAGE_API_URL, rawApiUrlV3);
+        }
+
         if (rawHistory) setHistory(JSON.parse(rawHistory));
         if (rawCart) setCart(JSON.parse(rawCart));
         if (rawAddresses) setAddresses(JSON.parse(rawAddresses));
         if (rawActive) setActiveAddressId(rawActive);
-        const url = rawApiUrl ?? DEFAULT_API_URL;
-        setApiUrlState(url);
-        setApiUrl(url);
+        if (rawTheme === 'light' || rawTheme === 'dark') setThemeOverride_(rawTheme);
+
+        restoredToken = storedToken;
+        if (storedToken) {
+          setToken(storedToken);
+          if (rawProfile) setProfile(JSON.parse(rawProfile));
+        }
       } catch {
         // A corrupt cache should not block the app — start from defaults.
+      }
+
+      if (!restoredToken) {
+        setIsRestoringSession(false);
+        return;
+      }
+
+      try {
+        const fresh = await getProfile(restoredToken);
+        setProfile(fresh);
+        setIsBlocked(fresh.status === 'blocked');
+        await AsyncStorage.setItem(STORAGE_PROFILE, JSON.stringify(fresh));
+      } catch (err) {
+        if (isApiError(err) && err.isAuthFailure) {
+          // Dead token: 30 days elapsed, or the account no longer exists.
+          await clearToken();
+          setToken(null);
+          setProfile(null);
+          await AsyncStorage.removeItem(STORAGE_PROFILE);
+        } else if (isApiError(err) && err.isBlocked) {
+          setIsBlocked(true);
+        }
+        // Anything else (offline, 5xx) keeps the cached profile in place.
       } finally {
-        setIsLoadingUser(false);
+        setIsRestoringSession(false);
       }
     }
     hydrate();
@@ -192,55 +396,202 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   // ── Identity ───────────────────────────────────────────────────────────────
 
-  const setUser = useCallback(async (next: UserInfo) => {
-    setUserState(next);
-    await AsyncStorage.setItem(STORAGE_USER, JSON.stringify(next));
-  }, []);
-
-  const signOut = useCallback(async () => {
-    setUserState(null);
-    setCart([]);
-    setHistory([]);
-    setAddresses([]);
-    setActiveAddressId(null);
-    setCouponCode(null);
-    await AsyncStorage.multiRemove([
-      STORAGE_USER,
-      STORAGE_HISTORY,
-      STORAGE_CART,
-      STORAGE_ADDRESSES,
-      STORAGE_ACTIVE_ADDRESS,
+  const signIn = useCallback(async (nextToken: string, nextProfile: UserProfile) => {
+    setToken(nextToken);
+    setProfile(nextProfile);
+    setIsBlocked(nextProfile.status === 'blocked');
+    await Promise.all([
+      saveToken(nextToken),
+      AsyncStorage.setItem(STORAGE_PROFILE, JSON.stringify(nextProfile)),
     ]);
   }, []);
 
+  /**
+   * Signs out locally. The cart, addresses and booking ids are device-local, so
+   * they go too. For a server-side revoke (lost phone), call `serverSignOut`.
+   */
+  const signOut = useCallback(async () => {
+    setToken(null);
+    setProfile(null);
+    setIsBlocked(false);
+    setCart([]);
+    setHistory([]);
+    setServiceRequests([]);
+    setActiveTrials([]);
+    setTrialHistory([]);
+    setAddresses([]);
+    setActiveAddressId(null);
+    setCouponCode(null);
+    setServerCoupons([]);
+    await Promise.all([
+      clearToken(),
+      AsyncStorage.multiRemove([
+        STORAGE_PROFILE,
+        STORAGE_HISTORY,
+        STORAGE_CART,
+        STORAGE_ADDRESSES,
+        STORAGE_ACTIVE_ADDRESS,
+      ]),
+    ]);
+  }, []);
+
+  /**
+   * Revokes all tokens on the account server-side (lost/stolen phone), then
+   * performs the normal local sign-out so the app returns to the login screen.
+   * Any old token from another device will get a 401 from that point on.
+   */
+  const serverSignOut = useCallback(async () => {
+    // Best-effort: if the network call fails, still sign out locally.
+    if (token) {
+      try {
+        await apiServerLogout(token);
+      } catch {
+        // Ignore — the local sign-out below is what matters for this device.
+      }
+    }
+    await signOut();
+  }, [token, signOut]);
+
+  /**
+   * Sets or renames the account holder. Throws on validation failure so the
+   * calling screen can show the server's own message inline.
+   */
+  const setFullName = useCallback(
+    async (fullName: string) => {
+      if (!token) throw new Error('You are signed out. Please sign in again.');
+      try {
+        const updated = await updateFullName(token, fullName);
+        setProfile(updated);
+        await AsyncStorage.setItem(STORAGE_PROFILE, JSON.stringify(updated));
+      } catch (err) {
+        if (isApiError(err) && err.isAuthFailure) await signOut();
+        throw err;
+      }
+    },
+    [token, signOut]
+  );
+
+  /**
+   * Name and phone for the checkout payload. Derived so a booking always carries
+   * the *verified* identity rather than anything typed into a local form.
+   */
+  const user = useMemo<UserInfo | null>(
+    () => (profile ? { name: profile.fullName ?? '', phone: profile.phone } : null),
+    [profile]
+  );
+
   // ── Address book ───────────────────────────────────────────────────────────
 
-  const persistAddresses = useCallback(async (next: Address[]) => {
-    setAddresses(next);
-    await AsyncStorage.setItem(STORAGE_ADDRESSES, JSON.stringify(next));
-  }, []);
+  /**
+   * Applies a server address list response to local state + AsyncStorage.
+   * Converts ServerAddress → Address (same shape; id is now a server ObjectId).
+   */
+  const applyServerAddresses = useCallback(
+    async (serverList: ServerAddress[], serverActiveId: string | null) => {
+      const converted: Address[] = serverList.map((a) => ({
+        id: a.id,
+        label: a.label,
+        locality: a.locality,
+        city: a.city,
+        line: a.line,
+        lat: a.lat,
+        lng: a.lng,
+      }));
+      setAddresses(converted);
+      setActiveAddressId(serverActiveId);
+      await Promise.all([
+        AsyncStorage.setItem(STORAGE_ADDRESSES, JSON.stringify(converted)),
+        serverActiveId
+          ? AsyncStorage.setItem(STORAGE_ACTIVE_ADDRESS, serverActiveId)
+          : AsyncStorage.removeItem(STORAGE_ACTIVE_ADDRESS),
+      ]);
+    },
+    []
+  );
 
   const addAddress = useCallback(
     async (input: Omit<Address, 'id'>) => {
+      if (token) {
+        try {
+          // Server requires lat/lng; if not provided fall back to 0,0 (offline add
+          // will still be saved locally and synced on next successful call).
+          const { addresses: serverList, activeAddressId: serverActive } = await addUserAddress(
+            token,
+            {
+              label: input.label,
+              locality: input.locality,
+              city: input.city,
+              line: input.line,
+              lat: input.lat ?? 0,
+              lng: input.lng ?? 0,
+            }
+          );
+          await applyServerAddresses(serverList, serverActive);
+          // Return the new address that the server just created.
+          const created = serverList.find((a) => a.isActive) ?? serverList[0];
+          if (created) {
+            return {
+              id: created.id,
+              label: created.label,
+              locality: created.locality,
+              city: created.city,
+              line: created.line,
+              lat: created.lat,
+              lng: created.lng,
+            } satisfies Address;
+          }
+        } catch {
+          // Fall through to local-only path so the address is not lost offline.
+        }
+      }
+      // Local-only fallback (offline or no token).
       const created: Address = { ...input, id: `addr_${Date.now()}` };
       const next = [created, ...addresses];
-      await persistAddresses(next);
+      setAddresses(next);
       setActiveAddressId(created.id);
-      await AsyncStorage.setItem(STORAGE_ACTIVE_ADDRESS, created.id);
+      await Promise.all([
+        AsyncStorage.setItem(STORAGE_ADDRESSES, JSON.stringify(next)),
+        AsyncStorage.setItem(STORAGE_ACTIVE_ADDRESS, created.id),
+      ]);
       return created;
     },
-    [addresses, persistAddresses]
+    [token, addresses, applyServerAddresses]
   );
 
-  const selectAddress = useCallback(async (id: string) => {
-    setActiveAddressId(id);
-    await AsyncStorage.setItem(STORAGE_ACTIVE_ADDRESS, id);
-  }, []);
+  const selectAddress = useCallback(
+    async (id: string) => {
+      // Optimistic local update first so the UI responds immediately.
+      setActiveAddressId(id);
+      await AsyncStorage.setItem(STORAGE_ACTIVE_ADDRESS, id);
+      if (token) {
+        try {
+          const { addresses: serverList, activeAddressId: serverActive } =
+            await selectUserAddress(token, id);
+          await applyServerAddresses(serverList, serverActive);
+        } catch {
+          // Keep the optimistic update on failure.
+        }
+      }
+    },
+    [token, applyServerAddresses]
+  );
 
   const removeAddress = useCallback(
     async (id: string) => {
+      if (token) {
+        try {
+          const { addresses: serverList, activeAddressId: serverActive } =
+            await deleteUserAddress(token, id);
+          await applyServerAddresses(serverList, serverActive);
+          return;
+        } catch {
+          // Fall through to local-only removal.
+        }
+      }
+      // Local-only fallback.
       const next = addresses.filter((a) => a.id !== id);
-      await persistAddresses(next);
+      setAddresses(next);
+      await AsyncStorage.setItem(STORAGE_ADDRESSES, JSON.stringify(next));
       if (activeAddressId === id) {
         const fallback = next[0]?.id ?? null;
         setActiveAddressId(fallback);
@@ -248,7 +599,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         else await AsyncStorage.removeItem(STORAGE_ACTIVE_ADDRESS);
       }
     },
-    [addresses, activeAddressId, persistAddresses]
+    [token, addresses, activeAddressId, applyServerAddresses]
   );
 
   const activeAddress = useMemo(
@@ -388,11 +739,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const appliedCoupon = useMemo(() => {
     if (!couponCode) return null;
-    const coupon = COUPONS.find((c) => c.code === couponCode);
-    // A coupon stays selected but stops applying if the cart drops below its floor.
-    if (!coupon || subtotal < coupon.minSubtotal) return null;
-    return coupon;
-  }, [couponCode, subtotal]);
+    // Look up from the server coupon list; fall back to an empty match.
+    const serverCoupon = serverCoupons.find((c) => c.code === couponCode);
+    if (!serverCoupon || subtotal < serverCoupon.minSubtotal) return null;
+    // Shape the ServerCoupon into the Coupon type that the rest of the app expects.
+    return serverCoupon as unknown as Coupon;
+  }, [couponCode, subtotal, serverCoupons]);
 
   const discount = appliedCoupon?.discount ?? 0;
   const total = useMemo(
@@ -401,6 +753,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   const applyCoupon = useCallback((code: string | null) => setCouponCode(code), []);
+
+  // ── Coupons (server-side) ──────────────────────────────────────────────────
+
+  const refreshCoupons = useCallback(async () => {
+    if (!token) {
+      setServerCoupons([]);
+      return;
+    }
+    setIsLoadingCoupons(true);
+    try {
+      const coupons = await getUserCoupons(token);
+      setServerCoupons(coupons);
+    } catch {
+      // Offline or 5xx — keep whatever is already shown.
+    } finally {
+      setIsLoadingCoupons(false);
+    }
+  }, [token]);
 
   // ── Bookings ───────────────────────────────────────────────────────────────
 
@@ -420,6 +790,134 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  // ── Instant bookings (server-owned) ────────────────────────────────────────
+
+  const refreshRequests = useCallback(async () => {
+    if (!token) {
+      setServiceRequests([]);
+      return;
+    }
+    setIsLoadingRequests(true);
+    try {
+      const { active, history: past } = await listUserRequests(token);
+      // `active` first so the live request leads the list; the server already
+      // returns history newest-first.
+      setServiceRequests([...active, ...past]);
+    } catch (err) {
+      if (isRequestApiError(err) && err.isAuthFailure) await signOut();
+      // Anything else (offline, 5xx) keeps whatever is already on screen.
+    } finally {
+      setIsLoadingRequests(false);
+    }
+  }, [token, signOut]);
+
+  const mergeRequest = useCallback((request: UserRequest) => {
+    setServiceRequests((prev) =>
+      prev.some((r) => r.id === request.id)
+        ? prev.map((r) => (r.id === request.id ? request : r))
+        : [request, ...prev]
+    );
+  }, []);
+
+  const liveRequests = useMemo(() => serviceRequests.filter(isLiveRequest), [serviceRequests]);
+  const pastRequests = useMemo(
+    () => serviceRequests.filter((r) => !isLiveRequest(r)),
+    [serviceRequests]
+  );
+  const activeRequest = liveRequests[0] ?? null;
+
+  // ── Discounted trials (server-owned) ───────────────────────────────────────
+
+  const refreshTrials = useCallback(async () => {
+    if (!token) {
+      setActiveTrials([]);
+      setTrialHistory([]);
+      return;
+    }
+    setIsLoadingTrials(true);
+    try {
+      const { active, history: past } = await listTrials(token);
+      setActiveTrials(active);
+      setTrialHistory(past);
+    } catch (err) {
+      if (isTrialApiError(err) && err.isAuthFailure) await signOut();
+      // Anything else (offline, 5xx, or a backend without the trial routes yet)
+      // keeps whatever is already on screen. A missing trial API must never take
+      // the bookings tab down with it.
+    } finally {
+      setIsLoadingTrials(false);
+    }
+  }, [token, signOut]);
+
+  /**
+   * Folds in a trial a screen already holds.
+   *
+   * A trial that has settled drops out of `active` on the next read, so this only
+   * updates what is there and adds what is not — it does not try to move rows
+   * between the two lists, which is the server's call.
+   */
+  const mergeTrial = useCallback((trial: Trial) => {
+    setActiveTrials((prev) =>
+      prev.some((t) => t.id === trial.id)
+        ? prev.map((t) => (t.id === trial.id ? trial : t))
+        : [trial, ...prev]
+    );
+  }, []);
+
+  const liveTrials = useMemo(() => activeTrials.filter(isLiveTrial), [activeTrials]);
+  const activeTrial = liveTrials[0] ?? null;
+
+  // Load once per session, and again whenever the account changes.
+  useEffect(() => {
+    refreshRequests();
+  }, [refreshRequests]);
+
+  useEffect(() => {
+    refreshTrials();
+  }, [refreshTrials]);
+
+  // Fetch personalised coupons once per login session. The Coupons screen
+  // additionally refreshes on focus so WELCOME150 disappears after payment.
+  useEffect(() => {
+    if (token) refreshCoupons();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  /**
+   * Keeps a live request fresh. Only runs while there is one — an idle customer
+   * costs no requests — and skips ticks while backgrounded, where the poll would
+   * only drain battery to update a screen nobody is looking at.
+   */
+  const hasLiveRequest = liveRequests.length > 0;
+  const hasLiveTrial = liveTrials.length > 0;
+  useEffect(() => {
+    if (!token || (!hasLiveRequest && !hasLiveTrial)) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    function schedule() {
+      timer = setTimeout(async () => {
+        if (stopped) return;
+        if (AppState.currentState === 'active') {
+          // Both lists on one timer: a customer can have a normal booking and a
+          // trial in flight at the same time, and two independent 6s pollers would
+          // double the traffic to keep one tab badge honest.
+          await Promise.all([
+            hasLiveRequest ? refreshRequests() : Promise.resolve(),
+            hasLiveTrial ? refreshTrials() : Promise.resolve(),
+          ]);
+        }
+        if (!stopped) schedule();
+      }, LIVE_POLL_MS);
+    }
+    schedule();
+
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [token, hasLiveRequest, hasLiveTrial, refreshRequests, refreshTrials]);
+
   // ── Backend ────────────────────────────────────────────────────────────────
 
   const saveApiUrl = useCallback(async (url: string) => {
@@ -429,12 +927,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await AsyncStorage.setItem(STORAGE_API_URL, clean);
   }, []);
 
+  const toggleTheme = useCallback(() => {
+    setThemeOverride_((prev) => {
+      // If no override yet, flip from current resolved state
+      const next = (prev ?? (systemScheme === 'dark' ? 'dark' : 'light')) === 'dark' ? 'light' : 'dark';
+      AsyncStorage.setItem(STORAGE_THEME, next);
+      return next;
+    });
+  }, [systemScheme]);
+
   const value = useMemo<AppContextValue>(
     () => ({
+      profile,
+      token,
       user,
-      isLoadingUser,
-      setUser,
+      isRestoringSession,
+      isLoadingUser: isRestoringSession,
+      isBlocked,
+      signIn,
+      setFullName,
       signOut,
+      serverSignOut,
       addresses,
       activeAddress,
       addAddress,
@@ -461,18 +974,43 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       appliedCoupon,
       discount,
       total,
-      credits: SIGNUP_CREDITS,
+      // Credits come from the server profile — same ledger as /api/user/wallet.
+      credits: profile?.credits ?? 0,
       history,
       addToHistory,
       updateHistoryStatus,
+      serverCoupons,
+      isLoadingCoupons,
+      refreshCoupons,
+      serviceRequests,
+      liveRequests,
+      pastRequests,
+      activeRequest,
+      isLoadingRequests,
+      refreshRequests,
+      mergeRequest,
+      activeTrials,
+      trialHistory,
+      liveTrials,
+      activeTrial,
+      isLoadingTrials,
+      refreshTrials,
+      mergeTrial,
+      isDark,
+      toggleTheme,
       apiUrl,
       saveApiUrl,
     }),
     [
+      profile,
+      token,
       user,
-      isLoadingUser,
-      setUser,
+      isRestoringSession,
+      isBlocked,
+      signIn,
+      setFullName,
       signOut,
+      serverSignOut,
       addresses,
       activeAddress,
       addAddress,
@@ -500,6 +1038,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       history,
       addToHistory,
       updateHistoryStatus,
+      serverCoupons,
+      isLoadingCoupons,
+      refreshCoupons,
+      serviceRequests,
+      liveRequests,
+      pastRequests,
+      activeRequest,
+      isLoadingRequests,
+      refreshRequests,
+      mergeRequest,
+      activeTrials,
+      trialHistory,
+      liveTrials,
+      activeTrial,
+      isLoadingTrials,
+      refreshTrials,
+      mergeTrial,
+      isDark,
+      toggleTheme,
       apiUrl,
       saveApiUrl,
     ]

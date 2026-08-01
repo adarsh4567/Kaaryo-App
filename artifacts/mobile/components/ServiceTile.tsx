@@ -21,6 +21,7 @@ export function ServiceTile({
   onPress,
   onAdd,
   width,
+  instant = false,
 }: {
   service: Service;
   /** Total units of this service already in the cart; 0 hides the count pip. */
@@ -28,9 +29,15 @@ export function ServiceTile({
   onPress: () => void;
   onAdd: () => void;
   width: number;
+  /**
+   * The corner button books this service outright rather than stacking a cart
+   * line. It carries a bolt instead of a plus, and drops the cart count — an
+   * instant booking never touches the cart, so showing one would be a lie.
+   */
+  instant?: boolean;
 }) {
   const { colors, shadow } = useTheme();
-  const inCart = quantity > 0;
+  const inCart = !instant && quantity > 0;
 
   return (
     <Pressable
@@ -69,19 +76,25 @@ export function ServiceTile({
             onAdd();
           }}
           accessibilityRole="button"
-          accessibilityLabel={`Add ${service.name}`}
+          accessibilityLabel={`${instant ? 'Book' : 'Add'} ${service.name}`}
           hitSlop={6}
           style={({ pressed }) => [
             styles.addBtn,
             shadow.sm,
             {
-              backgroundColor: inCart ? colors.primary : colors.card,
-              borderColor: inCart ? colors.primary : colors.border,
+              backgroundColor: instant || inCart ? colors.primary : colors.card,
+              borderColor: instant || inCart ? colors.primary : colors.border,
               transform: [{ scale: pressed ? 0.9 : 1 }],
             },
           ]}
         >
-          {inCart ? (
+          {instant ? (
+            <MaterialCommunityIcons
+              name="lightning-bolt"
+              size={16}
+              color={colors.primaryForeground}
+            />
+          ) : inCart ? (
             <Text variant="captionSemi" style={{ color: colors.primaryForeground }}>
               {quantity}
             </Text>
@@ -111,14 +124,18 @@ export function ServiceRailCard({
   onAdd,
   inCart,
   width,
+  instant = false,
 }: {
   service: Service;
   onPress: () => void;
   onAdd: () => void;
   inCart: boolean;
   width: number;
+  /** Books outright instead of adding to the cart — see `ServiceTile`. */
+  instant?: boolean;
 }) {
   const { colors, shadow } = useTheme();
+  const filled = instant || inCart;
 
   return (
     <Pressable
@@ -162,11 +179,11 @@ export function ServiceRailCard({
               onAdd();
             }}
             accessibilityRole="button"
-            accessibilityLabel={`Add ${service.name}`}
+            accessibilityLabel={`${instant ? 'Book' : 'Add'} ${service.name}`}
             style={({ pressed }) => [
               styles.railAdd,
               {
-                backgroundColor: inCart ? colors.primary : 'transparent',
+                backgroundColor: filled ? colors.primary : 'transparent',
                 borderColor: colors.primary,
                 opacity: pressed ? 0.8 : 1,
               },
@@ -174,9 +191,9 @@ export function ServiceRailCard({
           >
             <Text
               variant="micro"
-              style={{ color: inCart ? colors.primaryForeground : colors.primary }}
+              style={{ color: filled ? colors.primaryForeground : colors.primary }}
             >
-              {inCart ? 'ADDED' : 'ADD'}
+              {instant ? 'BOOK' : inCart ? 'ADDED' : 'ADD'}
             </Text>
           </Pressable>
         </View>
